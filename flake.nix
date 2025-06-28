@@ -150,6 +150,10 @@
               echo "📊 Mode: Motion detection + crop-based ML processing"
               "$PWD/process_motiondetection.py" "$@"
             '')
+            
+            (pkgs.writeShellScriptBin "process" ''
+              "$PWD/process.py" "$@"
+            '')
           ];
 
           shellHook = ''
@@ -167,13 +171,15 @@
             echo "  check - Check daemon status"
             echo ""
             echo "🎬 Video Processing Commands:"
-            echo "  process-ff - Full frame ML ensemble processing (process.py)"
-            echo "  process-md - Motion detection + crop processing (process2.py)"
+            echo "  process    - Unified processor with strategy selection"
+            echo "  process-ff - Full frame ML ensemble processing"
+            echo "  process-md - Motion detection + crop processing"
             echo ""
             echo "💡 Usage examples:"
-            echo "  process-ff                    # Process all videos with full frame approach"
-            echo "  process-md --videos 7 8 9     # Process specific videos with motion detection"
-            echo "  process-ff --videos IMG_0015.MP4  # Process single video by name"
+            echo "  process -s ff -v 7 8 9        # Full frame strategy"
+            echo "  process -s md -v 7 8 9        # Motion detection strategy"
+            echo "  process-ff --videos 7 8 9     # Direct full frame processing"
+            echo "  process-md --videos IMG_0015.MP4  # Direct motion detection processing"
           '';
         };
       });

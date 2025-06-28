@@ -35,14 +35,17 @@ except ImportError:
     PYTORCH_WILDLIFE_AVAILABLE = False
 
 # Get loggers
-logger = logging.getLogger(__name__)
-analysis_logger = logging.getLogger('analysis')
+logger = logging.getLogger('wildcams')
+analysis_logger = logger
 
 class MLDetectionEnsemble:
     """Ensemble ML detection system for wildlife video processing."""
     
-    def __init__(self, confidence_threshold: float = 0.1):
+    def __init__(self, confidence_threshold: float = 0.1, megadetector_version: str = 'MDV6-rtdetr-c', ensemble_models: List[str] = None, cache_dir: Optional['Path'] = None):
         self.confidence_threshold = confidence_threshold
+        self.megadetector_version = megadetector_version
+        self.ensemble_models = ensemble_models or ['yolov8x', 'yolov8m', 'yolov8n', 'megadetector_v6']
+        self.cache_dir = cache_dir
         
         # Model initialization flags
         self.detector = None
@@ -52,59 +55,99 @@ class MLDetectionEnsemble:
         self.deepfaune_detector = None
         self.feature_extractor = None
         
-        # Initialize models
+        # Initialize models based on configuration
         self._initialize_models()
     
     def _initialize_models(self):
-        """Initialize all ML models in the ensemble."""
+        """Initialize ML models based on ensemble configuration."""
         try:
-            logger.info("🤖 Initializing ML detection ensemble...")
+            logger.info(f"🤖 Initializing ML detection ensemble with models: {self.ensemble_models}")
+            logger.info(f"🎯 MegaDetector version: {self.megadetector_version}")
+            
+            # Set up model caching for PyTorch-Wildlife
+            if self.cache_dir:
+                import os
+                os.environ['TORCH_HOME'] = str(self.cache_dir / 'torch')
+                os.environ['PYTORCH_WILDLIFE_CACHE'] = str(self.cache_dir / 'pytorch_wildlife')
+                logger.info(f"📦 Model cache directory: {self.cache_dir}")
+                
+                # Create cache subdirectories
+                (self.cache_dir / 'torch').mkdir(exist_ok=True)
+                (self.cache_dir / 'pytorch_wildlife').mkdir(exist_ok=True)
             
             # Primary YOLOv8x detector
-            try:
-                logger.info("Loading YOLOv8x primary detector...")
-                self.detector = YOLO('yolov8x.pt')
-                logger.info("✅ YOLOv8x primary detector loaded successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to load YOLOv8x primary detector: {e}")
+            if 'yolov8x' in self.ensemble_models:
+                try:
+                    logger.info("Loading YOLOv8x primary detector...")
+                    self.detector = YOLO('yolov8x.pt')
+                    logger.info("✅ YOLOv8x primary detector loaded successfully")
+                except Exception as e:
+                    logger.error(f"❌ Failed to load YOLOv8x primary detector: {e}")
+            else:
+                logger.info("⏭️ Skipping YOLOv8x (not in ensemble configuration)")
             
             # Backup YOLOv8m detector
-            try:
-                logger.info("Loading YOLOv8m backup detector...")
-                self.detector_backup = YOLO('yolov8m.pt')
-                logger.info("✅ YOLOv8m backup detector loaded successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to load YOLOv8m backup detector: {e}")
+            if 'yolov8m' in self.ensemble_models:
+                try:
+                    logger.info("Loading YOLOv8m backup detector...")
+                    self.detector_backup = YOLO('yolov8m.pt')
+                    logger.info("✅ YOLOv8m backup detector loaded successfully")
+                except Exception as e:
+                    logger.error(f"❌ Failed to load YOLOv8m backup detector: {e}")
+            else:
+                logger.info("⏭️ Skipping YOLOv8m (not in ensemble configuration)")
             
             # MegaDetector fallback (YOLOv8n)
-            try:
-                logger.info("Loading YOLOv8n as MegaDetector fallback...")
-                self.megadetector = YOLO('yolov8n.pt')
-                logger.info("✅ YOLOv8n MegaDetector fallback loaded successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to load YOLOv8n MegaDetector fallback: {e}")
-            
-            # PyTorch-Wildlife models
-            if PYTORCH_WILDLIFE_AVAILABLE:
+            if 'yolov8n' in self.ensemble_models:
                 try:
-                    logger.info("🦎 Loading MegaDetector v6 (PyTorch-Wildlife)...")
-                    self.megadetector_v6 = pw_detection.MegaDetectorV6()
-                    logger.info("✅ MegaDetector v6 loaded successfully")
+                    logger.info("Loading YOLOv8n as MegaDetector fallback...")
+                    self.megadetector = YOLO('yolov8n.pt')
+                    logger.info("✅ YOLOv8n MegaDetector fallback loaded successfully")
                 except Exception as e:
-                    logger.error(f"❌ Failed to load MegaDetector v6: {e}")
-                    self.megadetector_v6 = None
-                
-                try:
-                    logger.info("🦎 Loading DeepFaune detector (PyTorch-Wildlife)...")
-                    self.deepfaune_detector = pw_detection.DeepFaune()
-                    logger.info("✅ DeepFaune detector loaded successfully")
-                except Exception as e:
-                    logger.error(f"❌ Failed to load DeepFaune detector: {e}")
-                    self.deepfaune_detector = None
+                    logger.error(f"❌ Failed to load YOLOv8n MegaDetector fallback: {e}")
             else:
-                logger.warning("⚠️ PyTorch-Wildlife not available - MegaDetector v6 and DeepFaune disabled")
+                logger.info("⏭️ Skipping YOLOv8n (not in ensemble configuration)")
             
-            # Feature extractor for clustering
+            # PyTorch-Wildlife MegaDetector v6
+            if 'megadetector_v6' in self.ensemble_models and PYTORCH_WILDLIFE_AVAILABLE:
+                try:
+                    logger.info(f"🦎 Loading MegaDetector v6 ({self.megadetector_version})...")
+                    
+                    # Check if model is already cached
+                    if self.cache_dir:
+                        model_cache_path = self.cache_dir / 'pytorch_wildlife' / f'{self.megadetector_version}.pt'
+                        if model_cache_path.exists():
+                            logger.info(f"📦 Using cached model: {model_cache_path}")
+                    
+                    # Load model with caching enabled and verbose disabled
+                    self.megadetector_v6 = pw_detection.MegaDetectorV6(
+                        version=self.megadetector_version, 
+                        pretrained=True,
+                        device='auto'  # Let PyTorch-Wildlife choose best device
+                    )
+                    
+                    # Disable verbose to prevent KeyError with unknown class IDs
+                    if hasattr(self.megadetector_v6, 'predictor') and hasattr(self.megadetector_v6.predictor, 'args'):
+                        self.megadetector_v6.predictor.args.verbose = False
+                    logger.info(f"✅ MegaDetector v6 ({self.megadetector_version}) loaded successfully")
+                    
+                    # Log cache status
+                    if self.cache_dir:
+                        logger.info(f"📦 Model cached to: {self.cache_dir / 'pytorch_wildlife'}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Failed to load MegaDetector v6 ({self.megadetector_version}): {e}")
+                    self.megadetector_v6 = None
+            elif 'megadetector_v6' in self.ensemble_models:
+                logger.warning("⚠️ PyTorch-Wildlife not available - MegaDetector v6 disabled")
+            else:
+                logger.info("⏭️ Skipping MegaDetector v6 (not in ensemble configuration)")
+            
+            # DeepFaune is a classification model, not detection - always disable for detection ensemble
+            logger.info("🦎 DeepFaune is a classification model, not detection - skipping in detection ensemble")
+            self.deepfaune_detector = None
+            
+            # Feature extractor for clustering (always load)
             try:
                 logger.info("Loading ResNet18 feature extractor...")
                 self.feature_extractor = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
@@ -137,10 +180,12 @@ class MLDetectionEnsemble:
         """
         detections = []
         
+        step_counter = 1
+        
         # 1. Primary YOLOv8x detector
         if self.detector is not None:
             try:
-                analysis_logger.info(f"ENSEMBLE_STEP_1: Running YOLOv8x primary model with conf={self.confidence_threshold}")
+                logger.info(f"🔍 Running YOLOv8x detection...")
                 results = self.detector(frame, conf=self.confidence_threshold, verbose=False)
                 primary_detections = 0
                 for result in results:
@@ -152,15 +197,17 @@ class MLDetectionEnsemble:
                         }
                         detections.append(detection)
                         primary_detections += 1
-                        analysis_logger.info(f"PRIMARY: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
-                analysis_logger.info(f"Primary model found {primary_detections} detections")
+                        logger.debug(f"YOLOv8x: conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
+                logger.info(f"✅ YOLOv8x: {primary_detections} detections found")
             except Exception as e:
                 analysis_logger.error(f"Primary model failed: {e}")
+                logger.error(f"❌ YOLOv8x failed: {e}")
         
         # 2. Backup YOLOv8m detector
         if self.detector_backup is not None:
             try:
-                analysis_logger.info(f"ENSEMBLE_STEP_2: Running YOLOv8m backup model with conf={self.confidence_threshold}")
+                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running YOLOv8m backup model with conf={self.confidence_threshold}")
+                logger.info(f"🔍 Running YOLOv8m detection...")
                 results = self.detector_backup(frame, conf=self.confidence_threshold, verbose=False)
                 backup_detections = 0
                 for result in results:
@@ -173,14 +220,18 @@ class MLDetectionEnsemble:
                         detections.append(detection)
                         backup_detections += 1
                         analysis_logger.info(f"BACKUP: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
+                logger.info(f"✅ YOLOv8m: {backup_detections} detections found")
                 analysis_logger.info(f"Backup model found {backup_detections} detections")
+                step_counter += 1
             except Exception as e:
                 analysis_logger.error(f"Backup model failed: {e}")
+                logger.error(f"❌ YOLOv8m failed: {e}")
         
         # 3. MegaDetector fallback (YOLOv8n)
         if self.megadetector is not None:
             try:
-                analysis_logger.info(f"ENSEMBLE_STEP_3: Running MegaDetector fallback (YOLOv8n) with conf=0.1")
+                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector fallback (YOLOv8n) with conf=0.1")
+                logger.info(f"🔍 Running YOLOv8n (MegaDetector fallback)...")
                 results = self.megadetector(frame, conf=0.1, verbose=False)
                 mega_detections = 0
                 for result in results:
@@ -194,68 +245,130 @@ class MLDetectionEnsemble:
                         detections.append(detection)
                         mega_detections += 1
                         analysis_logger.info(f"MEGADETECTOR_FALLBACK: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
+                logger.info(f"✅ YOLOv8n: {mega_detections} detections found")
                 analysis_logger.info(f"MegaDetector fallback found {mega_detections} total detections")
+                step_counter += 1
             except Exception as e:
                 analysis_logger.error(f"MegaDetector fallback failed: {e}")
+                logger.error(f"❌ YOLOv8n failed: {e}")
         
         # 4. MegaDetector v6 (PyTorch-Wildlife)
         if self.megadetector_v6 is not None:
             try:
-                analysis_logger.info("ENSEMBLE_STEP_4: Running MegaDetector v6 (PyTorch-Wildlife)")
+                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector v6 (PyTorch-Wildlife)")
+                logger.info(f"🔍 Running MegaDetector v6 ({self.megadetector_version})...")
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 analysis_logger.info(f"MegaDetector v6 input: numpy array {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
                 
-                results = self.megadetector_v6.single_image_detection(
-                    rgb_frame,
-                    det_conf_thres=0.05
-                )
+                try:
+                    results = self.megadetector_v6.single_image_detection(
+                        rgb_frame,
+                        det_conf_thres=0.05
+                    )
+                except KeyError as ke:
+                    # Handle PyTorch-Wildlife bug with unknown class IDs
+                    # The model detected classes outside the standard MegaDetector mapping (0:animal, 1:person, 2:vehicle)
+                    logger.info(f"🔍 MegaDetector v6 detected unknown class ID {ke} - likely animal detection from extended class set")
+                    logger.debug(f"Standard MegaDetector classes: 0=animal, 1=person, 2=vehicle. Detected class {ke} suggests extended model.")
+                    
+                    # Try to get raw detection results directly from the predictor
+                    try:
+                        if hasattr(self.megadetector_v6, 'predictor') and hasattr(self.megadetector_v6.predictor, 'results'):
+                            raw_results = self.megadetector_v6.predictor.results[-1] if self.megadetector_v6.predictor.results else None
+                            if raw_results and hasattr(raw_results, 'boxes'):
+                                # Create custom results with raw class IDs
+                                results = {'detections': raw_results, 'raw_class_ids': True}
+                            else:
+                                results = {'detections': None}
+                        else:
+                            results = {'detections': None}
+                    except Exception as e:
+                        logger.debug(f"Could not extract raw results: {e}")
+                        results = {'detections': None}
                 
                 md_v6_detections = 0
                 analysis_logger.info(f"MegaDetector v6 result type: {type(results)}")
                 
                 if results is not None and isinstance(results, dict):
                     detections_obj = results.get('detections', None)
+                    is_raw_class_ids = results.get('raw_class_ids', False)
                     
-                    if detections_obj is not None and hasattr(detections_obj, 'xyxy'):
-                        analysis_logger.info("Processing MegaDetector v6 supervision.Detections format")
-                        try:
-                            boxes = detections_obj.xyxy
-                            confidences = detections_obj.confidence
-                            class_ids = getattr(detections_obj, 'class_id', None)
-                            
-                            # Convert to numpy if needed
-                            if hasattr(boxes, 'cpu'):
-                                boxes = boxes.cpu().numpy()
-                            if hasattr(confidences, 'cpu'):
-                                confidences = confidences.cpu().numpy()
-                            if class_ids is not None and hasattr(class_ids, 'cpu'):
-                                class_ids = class_ids.cpu().numpy()
-                            
-                            for i in range(len(boxes)):
-                                box = boxes[i]
-                                conf = confidences[i]
+                    if detections_obj is not None:
+                        if is_raw_class_ids and hasattr(detections_obj, 'boxes'):
+                            # Handle raw Ultralytics results with potentially unknown class IDs
+                            logger.info("Processing MegaDetector v6 raw results with extended class IDs")
+                            try:
+                                boxes = detections_obj.boxes
+                                if hasattr(boxes, 'xyxy') and hasattr(boxes, 'conf') and hasattr(boxes, 'cls'):
+                                    xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+                                    confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+                                    cls_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                                    
+                                    for i in range(len(xyxy)):
+                                        # Fix coordinate handling - xyxy should be [x1, y1, x2, y2]
+                                        x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
+                                        bbox = [x1, y1, x2, y2]
+                                        confidence = float(confs[i])
+                                        class_id = int(cls_ids[i])
+                                        
+                                        # Skip detections with invalid coordinates
+                                        if confidence >= 0.05 and x2 > x1 and y2 > y1:
+                                            det = {
+                                                'confidence': confidence,
+                                                'bbox': bbox,
+                                                'source': 'megadetector_v6',
+                                                'class': class_id,
+                                                'raw_class_id': True
+                                            }
+                                            detections.append(det)
+                                            md_v6_detections += 1
+                                            logger.info(f"✅ MegaDetector v6 raw: class_id={class_id}, conf={confidence:.4f}")
+                            except Exception as e:
+                                logger.error(f"Error parsing MegaDetector v6 raw results: {e}")
+                        elif hasattr(detections_obj, 'xyxy'):
+                            # Standard supervision.Detections format
+                            logger.debug("Processing MegaDetector v6 supervision.Detections format")
+                            try:
+                                boxes = detections_obj.xyxy
+                                confidences = detections_obj.confidence
+                                class_ids = getattr(detections_obj, 'class_id', None)
                                 
-                                bbox = [float(box[j]) for j in range(4)]
-                                confidence = float(conf)
+                                # Convert to numpy if needed
+                                if hasattr(boxes, 'cpu'):
+                                    boxes = boxes.cpu().numpy()
+                                if hasattr(confidences, 'cpu'):
+                                    confidences = confidences.cpu().numpy()
+                                if class_ids is not None and hasattr(class_ids, 'cpu'):
+                                    class_ids = class_ids.cpu().numpy()
                                 
-                                if confidence >= 0.05:
-                                    det = {
-                                        'confidence': confidence,
-                                        'bbox': bbox,
-                                        'source': 'megadetector_v6',
-                                        'class': int(class_ids[i]) if class_ids is not None else 1
-                                    }
-                                    detections.append(det)
-                                    md_v6_detections += 1
-                                    analysis_logger.info(f"MEGADETECTOR_V6: timestamp={timestamp_seconds:.2f}s, conf={det['confidence']:.4f}, bbox={det['bbox']}")
-                        except Exception as e:
-                            analysis_logger.error(f"Error parsing MegaDetector v6 supervision format: {e}")
-                    else:
-                        analysis_logger.info(f"MegaDetector v6 no detections found in result dict")
+                                for i in range(len(boxes)):
+                                    box = boxes[i]
+                                    conf = confidences[i]
+                                    
+                                    bbox = [float(box[j]) for j in range(4)]
+                                    confidence = float(conf)
+                                    
+                                    if confidence >= 0.05:
+                                        det = {
+                                            'confidence': confidence,
+                                            'bbox': bbox,
+                                            'source': 'megadetector_v6',
+                                            'class': int(class_ids[i]) if class_ids is not None else 1
+                                        }
+                                        detections.append(det)
+                                        md_v6_detections += 1
+                                        logger.debug(f"MegaDetector v6: conf={det['confidence']:.4f}, bbox={det['bbox']}")
+                            except Exception as e:
+                                logger.error(f"Error parsing MegaDetector v6 supervision format: {e}")
+                        else:
+                            logger.debug(f"MegaDetector v6 no detections found in result dict")
                 
+                logger.info(f"✅ MegaDetector v6: {md_v6_detections} detections found")
                 analysis_logger.info(f"MegaDetector v6 found {md_v6_detections} detections")
             except Exception as e:
-                analysis_logger.error(f"MegaDetector v6 failed: {e}")
+                import traceback
+                logger.error(f"❌ MegaDetector v6 failed: {e}")
+                logger.debug(f"MegaDetector v6 traceback: {traceback.format_exc()}")
         
         # 5. DeepFaune detector (PyTorch-Wildlife)
         if self.deepfaune_detector is not None:

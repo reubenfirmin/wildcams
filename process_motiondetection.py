@@ -17,61 +17,56 @@
 # ///
 """
 Motion detection wildlife video processor.
-Uses motion detection to identify regions of interest before running ML models,
-significantly improving performance and accuracy for camera trap footage.
+Uses real-time motion detection to focus ML analysis on frames/regions with movement.
 """
 
 import os
 import sys
+import cv2
+import numpy as np
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import cv2
-import numpy as np
 from tqdm import tqdm
 
 # Import base processor
 from video_processor_base import VideoProcessorBase
 
 # Get loggers
-logger = logging.getLogger(__name__)
-analysis_logger = logging.getLogger('analysis')
+logger = logging.getLogger('wildcams')
+analysis_logger = logger
 
 class MotionDetectionVideoProcessor(VideoProcessorBase):
-    """Motion detection video processor using crop-based ML ensemble."""
+    """Motion detection video processor that streams through video frames sequentially."""
     
     def __init__(self):
         super().__init__()
         
-        # Motion detection configuration
+        # Motion detection configuration - tuned for camera trap videos
         self.motion_config = {
-            'method': os.getenv('MOTION_METHOD', 'MOG2'),  # 'MOG2', 'KNN', or 'frame_diff'
-            'var_threshold': int(os.getenv('MOTION_VAR_THRESHOLD', '16')),
-            'history': int(os.getenv('MOTION_HISTORY', '20')),
-            'detect_shadows': os.getenv('MOTION_DETECT_SHADOWS', 'True').lower() == 'true',
-            'min_motion_area': int(os.getenv('MIN_MOTION_AREA', '500')),
-            'max_motion_area': int(os.getenv('MAX_MOTION_AREA', '100000')),
-            'bbox_padding': float(os.getenv('MOTION_BBOX_PADDING', '0.2')),
-            'min_fill_ratio': float(os.getenv('MIN_FILL_RATIO', '0.3')),
-            'min_persistence': int(os.getenv('MOTION_MIN_PERSISTENCE', '3')),
-            'motion_history_length': int(os.getenv('MOTION_HISTORY_LENGTH', '5')),
+            'method': os.getenv('MOTION_METHOD', 'MOG2'),
+            'var_threshold': int(os.getenv('MOTION_VAR_THRESHOLD', '32')),
+            'min_area': int(os.getenv('MIN_MOTION_AREA', '2000')),
+            'max_area': int(os.getenv('MAX_MOTION_AREA', '80000')),
+            'detect_shadows': True,
+            'history': int(os.getenv('MOTION_HISTORY', '100')),
+            'max_regions_per_frame': int(os.getenv('MAX_REGIONS_PER_FRAME', '10')),
+            'min_region_width': int(os.getenv('MIN_REGION_WIDTH', '30')),
+            'min_region_height': int(os.getenv('MIN_REGION_HEIGHT', '30')),
             'max_aspect_ratio': float(os.getenv('MAX_ASPECT_RATIO', '5.0')),
-            'vegetation_zone_height': float(os.getenv('VEGETATION_ZONE_HEIGHT', '0.3')),
-            'min_region_confidence': float(os.getenv('MIN_REGION_CONFIDENCE', '0.3')),
+            'motion_margin': int(os.getenv('MOTION_MARGIN', '30'))
         }
         
-        # Motion detection state
-        self.motion_history = []
-        self.previous_frame = None
+        # Initialize motion detection algorithm
         self.bg_subtractor = None
-        
-        # Initialize motion detector
         self.init_motion_detector()
         
-        logger.info("🎯 Motion detection video processor initialized")
+        logger.info(f"🎯 Motion detection video processor initialized")
+        logger.info(f"🔍 Motion method: {self.motion_config['method']}")
+        logger.info(f"🎚️ Motion thresholds: area {self.motion_config['min_area']}-{self.motion_config['max_area']}, variance {self.motion_config['var_threshold']}")
     
     def init_motion_detector(self):
-        """Initialize motion detection background subtractor."""
+        """Initialize motion detection algorithm."""
         if self.motion_config['method'] == 'MOG2':
             self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
                 detectShadows=self.motion_config['detect_shadows'],
@@ -84,390 +79,310 @@ class MotionDetectionVideoProcessor(VideoProcessorBase):
                 dist2Threshold=400,
                 history=self.motion_config['history']
             )
-        else:  # frame_diff
-            self.bg_subtractor = None  # Will use frame differencing
+        else:
+            raise ValueError(f"Unknown motion detection method: {self.motion_config['method']}")
         
-        logger.info(f"🎯 Motion detector initialized: {self.motion_config['method']}")
+        analysis_logger.info(f"Motion detector initialized: {self.motion_config['method']}")
     
-    def detect_motion_regions(self, frame, frame_idx):
-        """Detect regions with motion in the current frame."""
-        motion_regions = []
+    def _open_video_stream(self, video_path: Path) -> Optional[cv2.VideoCapture]:
+        """Open video stream with fallback backends."""
+        for backend in [cv2.CAP_FFMPEG, cv2.CAP_GSTREAMER, cv2.CAP_ANY]:
+            cap = cv2.VideoCapture(str(video_path), backend)
+            if cap.isOpened():
+                return cap
+            cap.release()
         
-        try:
-            if self.motion_config['method'] == 'frame_diff':
-                motion_mask = self._frame_difference_motion(frame)
-            else:
-                motion_mask = self._background_subtraction_motion(frame)
-            
-            if motion_mask is None:
-                return motion_regions
-            
-            # Extract motion regions from mask
-            raw_regions = self._extract_motion_regions(motion_mask)
-            
-            # Apply intelligent filtering
-            filtered_regions = self._filter_motion_regions(raw_regions, frame.shape)
-            
-            # Track across frames for temporal consistency
-            consistent_regions = self._track_motion_consistency(filtered_regions)
-            
-            # Add to motion history
-            self.motion_history.append(consistent_regions)
-            if len(self.motion_history) > self.motion_config['motion_history_length']:
-                self.motion_history.pop(0)
-            
-            analysis_logger.info(f"Frame {frame_idx}: {len(raw_regions)} raw, {len(filtered_regions)} filtered, {len(consistent_regions)} consistent motion regions")
-            
-            return consistent_regions
-            
-        except Exception as e:
-            analysis_logger.error(f"Motion detection failed for frame {frame_idx}: {e}")
-            return motion_regions
+        logger.error(f"❌ Could not open video with any backend: {video_path}")
+        return None
     
-    def _frame_difference_motion(self, frame):
-        """Detect motion using frame differencing."""
-        if self.previous_frame is None:
-            self.previous_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    def _get_frame_at_index(self, video_path: Path, frame_idx: int) -> Optional[np.ndarray]:
+        """Get a specific frame from the video."""
+        cap = self._open_video_stream(video_path)
+        if cap is None:
             return None
-            
-        current_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        diff = cv2.absdiff(self.previous_frame, current_gray)
-        _, motion_mask = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
         
-        # Apply morphological operations to clean up mask
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, kernel)
-        motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        cap.release()
         
-        self.previous_frame = current_gray
-        return motion_mask
+        return frame if ret else None
     
-    def _background_subtraction_motion(self, frame):
-        """Detect motion using background subtraction."""
+    def detect_motion_regions(self, frame: np.ndarray, frame_idx: int) -> List[Dict]:
+        """Detect significant motion regions suitable for camera trap wildlife."""
         if self.bg_subtractor is None:
-            self.init_motion_detector()
-            
-        motion_mask = self.bg_subtractor.apply(frame)
+            return []
         
-        # Apply morphological operations to clean up mask
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, kernel)
-        motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
+        # Apply background subtraction
+        fg_mask = self.bg_subtractor.apply(frame)
         
-        return motion_mask
-    
-    def _extract_motion_regions(self, motion_mask):
-        """Extract bounding boxes from motion mask."""
-        contours, _ = cv2.findContours(motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # More aggressive morphological operations to reduce noise
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        
+        # Remove small noise
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel_small)
+        # Connect nearby regions 
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel_large)
+        # Final erosion to remove remaining noise
+        fg_mask = cv2.erode(fg_mask, kernel_small, iterations=1)
+        
+        # Find contours
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Sort contours by area (largest first) and limit to max regions
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        contours = contours[:self.motion_config['max_regions_per_frame']]
         
         motion_regions = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if self.motion_config['min_motion_area'] <= area <= self.motion_config['max_motion_area']:
-                x, y, w, h = cv2.boundingRect(contour)
-                
-                # Expand box for context
-                padding = self.motion_config['bbox_padding']
-                x_pad = int(w * padding)
-                y_pad = int(h * padding)
-                
-                motion_regions.append({
-                    'bbox': [max(0, x-x_pad), max(0, y-y_pad), x+w+x_pad, y+h+y_pad],
-                    'area': area,
-                    'confidence': area / (w * h),  # Fill ratio
-                    'contour_area': area,
-                    'bbox_area': w * h
-                })
+            
+            # Filter by area - focus on significant motion only
+            if area < self.motion_config['min_area'] or area > self.motion_config['max_area']:
+                continue
+            
+            # Get bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Reject very thin or small regions (likely noise)
+            if (w < self.motion_config['min_region_width'] or 
+                h < self.motion_config['min_region_height'] or 
+                w/h > self.motion_config['max_aspect_ratio'] or 
+                h/w > self.motion_config['max_aspect_ratio']):
+                continue
+            
+            # Expand bounding box for better ML detection context
+            margin = self.motion_config['motion_margin']
+            x = max(0, x - margin)
+            y = max(0, y - margin)
+            w = min(frame.shape[1] - x, w + 2 * margin)
+            h = min(frame.shape[0] - y, h + 2 * margin)
+            
+            motion_region = {
+                'bbox': [x, y, x + w, y + h],
+                'area': area,
+                'contour': contour,
+                'frame_idx': frame_idx
+            }
+            motion_regions.append(motion_region)
+            
+            logger.debug(f"Frame {frame_idx}: Motion region area={area}, bbox=[{x},{y},{x+w},{y+h}]")
         
         return motion_regions
     
-    def _filter_motion_regions(self, regions, frame_shape):
-        """Apply intelligent filtering to motion regions."""
-        filtered = []
+    def run_ml_ensemble_on_crop(self, frame: np.ndarray, motion_region: Dict, frame_idx: int, region_idx: int, timestamp: float) -> List[Dict]:
+        """Run ML ensemble on a motion-detected crop."""
+        bbox = motion_region['bbox']
+        x1, y1, x2, y2 = bbox
         
-        for region in regions:
-            x1, y1, x2, y2 = region['bbox']
-            w, h = x2 - x1, y2 - y1
-            
-            if w <= 0 or h <= 0:
-                continue
-            
-            # Filter by aspect ratio (remove vegetation sway)
-            aspect_ratio = w / h
-            if aspect_ratio > self.motion_config['max_aspect_ratio'] or aspect_ratio < (1/self.motion_config['max_aspect_ratio']):
-                continue
-            
-            # Filter by position (skip vegetation zone)
-            if y1 < frame_shape[0] * self.motion_config['vegetation_zone_height']:
-                continue
-            
-            # Filter by confidence
-            if region['confidence'] < self.motion_config['min_region_confidence']:
-                continue
-            
-            filtered.append(region)
+        # Extract crop
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return []
         
-        return filtered
-    
-    def _track_motion_consistency(self, regions):
-        """Track motion consistency across frames."""
-        if len(self.motion_history) < self.motion_config['min_persistence']:
-            return regions
+        analysis_logger.info(f"Frame {frame_idx}, Region {region_idx}: Running ML ensemble on crop {crop.shape}")
+        logger.info(f"🔬 Analyzing motion region {region_idx+1} ({crop.shape[1]}x{crop.shape[0]}px)")
         
-        consistent = []
-        for region in regions:
-            persistence_count = 1  # Current frame
-            
-            # Check overlap with previous frames
-            for past_frame_regions in self.motion_history[-self.motion_config['min_persistence']+1:]:
-                for past_region in past_frame_regions:
-                    if self._regions_overlap(region, past_region):
-                        persistence_count += 1
-                        break
-            
-            if persistence_count >= self.motion_config['min_persistence']:
-                consistent.append(region)
+        # Run ensemble detection on the crop
+        crop_detections = self.ml_ensemble.run_ensemble_detection(crop, timestamp, frame_idx)
         
-        return consistent
-    
-    def _regions_overlap(self, region1, region2, threshold=0.3):
-        """Check if two regions overlap significantly."""
-        x1_1, y1_1, x2_1, y2_1 = region1['bbox']
-        x1_2, y1_2, x2_2, y2_2 = region2['bbox']
-        
-        # Calculate intersection
-        x1_int = max(x1_1, x1_2)
-        y1_int = max(y1_1, y1_2)
-        x2_int = min(x2_1, x2_2)
-        y2_int = min(y2_1, y2_2)
-        
-        if x2_int <= x1_int or y2_int <= y1_int:
-            return False
-        
-        intersection_area = (x2_int - x1_int) * (y2_int - y1_int)
-        union_area = region1['area'] + region2['area'] - intersection_area
-        
-        return (intersection_area / union_area) > threshold
-    
-    def enhanced_frame_analysis(self, frame: np.ndarray, frame_idx: int, video_debug_dir: Path, timestamp_seconds: float = None) -> List[Dict]:
-        """Analyze a single frame with motion detection pre-filtering for focused ML processing."""
-        analysis_logger.info(f"--- FRAME {frame_idx} ANALYSIS START ---")
-        analysis_logger.info(f"PREPROCESSING_MODE: MOTION_DETECTION (process2.py)")
-        analysis_logger.info(f"Frame shape: {frame.shape}, dtype: {frame.dtype}")
-        if timestamp_seconds is not None:
-            analysis_logger.info(f"Video timestamp: {timestamp_seconds:.2f}s")
-        
-        detections = []
-        
-        # Step 1: Detect motion regions
-        analysis_logger.info(f"MOTION_STEP_1: Detecting motion regions in frame {frame_idx}")
-        motion_regions = self.detect_motion_regions(frame, frame_idx)
-        
-        if not motion_regions:
-            # No significant motion - skip expensive ML processing but save debug frame
-            analysis_logger.info(f"MOTION_RESULT: Frame {frame_idx} - No significant motion detected, skipping ML processing")
-            
-            # Save debug frame showing no motion
-            debug_frame_path = video_debug_dir / f"frame_{frame_idx:04d}_no_motion.jpg"
-            cv2.imwrite(str(debug_frame_path), frame)
-            
-            analysis_logger.info(f"--- FRAME {frame_idx} ANALYSIS END: 0 total detections ---")
-            return detections
-        
-        # Step 2: Process each motion region with ML ensemble
-        analysis_logger.info(f"MOTION_STEP_2: Processing {len(motion_regions)} motion regions with ML ensemble")
-        total_region_detections = 0
-        for i, region in enumerate(motion_regions):
-            analysis_logger.info(f"MOTION_REGION: Frame {frame_idx} Region {i+1}/{len(motion_regions)} - area={region['area']}, confidence={region['confidence']:.3f}")
-            
-            # Extract and validate crop
-            x1, y1, x2, y2 = region['bbox']
-            x1, y1, x2, y2 = max(0, x1), max(0, y1), min(frame.shape[1], x2), min(frame.shape[0], y2)
-            
-            if x2 <= x1 or y2 <= y1:
-                analysis_logger.warning(f"Invalid crop region: {region['bbox']}")
-                continue
-                
-            cropped_frame = frame[y1:y2, x1:x2]
-            
-            if cropped_frame.size == 0:
-                analysis_logger.warning(f"Empty crop for region {i+1}")
-                continue
-            
-            # Save debug crop
-            crop_debug_path = video_debug_dir / f"frame_{frame_idx:04d}_region_{i+1:02d}_crop.jpg"
-            cv2.imwrite(str(crop_debug_path), cropped_frame)
-            
-            # Run ML ensemble on cropped region
-            analysis_logger.info(f"CROP_ML: Running ML ensemble on motion crop {i+1}")
-            region_detections = self.run_ml_ensemble_on_crop(cropped_frame, region['bbox'], frame_idx, i+1, timestamp_seconds)
-            
-            # Scale detections back to original frame coordinates
-            analysis_logger.info(f"CROP_SCALE: Scaling {len(region_detections)} detections back to original coordinates")
-            scaled_detections = self.scale_detections_to_original(region_detections, region['bbox'])
-            detections.extend(scaled_detections)
-            total_region_detections += len(scaled_detections)
-        
-        # Save debug frame with motion regions and detections
-        self.save_debug_frame_with_annotations(frame, motion_regions, detections, video_debug_dir, frame_idx)
-        
-        analysis_logger.info(f"--- FRAME {frame_idx} ANALYSIS END: {total_region_detections} total detections from {len(motion_regions)} motion regions ---")
-        return detections
-    
-    def run_ml_ensemble_on_crop(self, cropped_frame: np.ndarray, original_bbox: List[int], frame_idx: int, region_idx: int, timestamp_seconds: float = None) -> List[Dict]:
-        """Run the 5-model ML ensemble on a cropped motion region using shared module."""
-        analysis_logger.info(f"CROP_ENSEMBLE: Frame {frame_idx} Region {region_idx} - Running ML ensemble on crop {cropped_frame.shape}")
-        
-        # Use shared ML ensemble for consistent detection across process.py and process2.py
-        detections = self.ml_ensemble.run_ensemble_detection(
-            cropped_frame, timestamp_seconds, frame_idx
-        )
-        
-        # Update source labels to indicate crop processing
-        for detection in detections:
-            original_source = detection.get('source', 'unknown')
-            detection['source'] = f"{original_source}_crop"
-            detection['region_idx'] = region_idx
-        
-        analysis_logger.info(f"CROP_RESULT: Frame {frame_idx} Region {region_idx} - ML ensemble found {len(detections)} detections on crop")
-        return detections
-    
-    def scale_detections_to_original(self, detections: List[Dict], motion_bbox: List[int]) -> List[Dict]:
-        """Scale detection coordinates from crop back to original frame coordinates."""
-        x_offset, y_offset = motion_bbox[0], motion_bbox[1]
-        
-        scaled_detections = []
-        for detection in detections:
-            scaled_detection = detection.copy()
-            
-            # Scale bbox coordinates
+        # Convert crop-relative coordinates to frame-absolute coordinates
+        frame_detections = []
+        for detection in crop_detections:
             crop_bbox = detection['bbox']
-            original_bbox = [
-                crop_bbox[0] + x_offset,  # x1
-                crop_bbox[1] + y_offset,  # y1
-                crop_bbox[2] + x_offset,  # x2
-                crop_bbox[3] + y_offset   # y2
+            # Convert crop coordinates to frame coordinates
+            frame_bbox = [
+                crop_bbox[0] + x1,  # x1
+                crop_bbox[1] + y1,  # y1
+                crop_bbox[2] + x1,  # x2
+                crop_bbox[3] + y1   # y2
             ]
-            scaled_detection['bbox'] = original_bbox
-            scaled_detection['motion_region_bbox'] = motion_bbox
             
-            scaled_detections.append(scaled_detection)
+            frame_detection = detection.copy()
+            frame_detection['bbox'] = frame_bbox
+            frame_detection['motion_region'] = region_idx
+            frame_detection['motion_area'] = motion_region['area']
+            
+            frame_detections.append(frame_detection)
+            
+            analysis_logger.info(f"Motion crop detection: conf={detection['confidence']:.4f}, source={detection.get('source', 'unknown')}")
         
-        return scaled_detections
+        logger.info(f"✅ Region {region_idx+1}: {len(frame_detections)} detections found")
+        return frame_detections
     
-    def save_debug_frame_with_annotations(self, frame, motion_regions, detections, video_debug_dir, frame_idx):
-        """Save debug frame with motion regions and detections annotated."""
+    def _save_debug_frame_with_regions(self, frame: np.ndarray, motion_regions: List[Dict], detections: List[Dict], output_path: Path):
+        """Save debug frame with motion regions and detections highlighted."""
         debug_frame = frame.copy()
         
         # Draw motion regions in blue
         for region in motion_regions:
-            x1, y1, x2, y2 = [int(coord) for coord in region['bbox']]
-            cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(debug_frame, f"Motion", (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+            bbox = region['bbox']
+            cv2.rectangle(debug_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0), 2)
+            cv2.putText(debug_frame, f"Motion: {region['area']}", (bbox[0], bbox[1]-5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
         
-        # Draw detections in green
+        # Draw animal detections in green
         for detection in detections:
-            x1, y1, x2, y2 = [int(coord) for coord in detection['bbox']]
-            confidence = detection['confidence']
-            cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(debug_frame, f"{confidence:.3f}", (x1, y2+15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            bbox = detection['bbox']
+            cv2.rectangle(debug_frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 2)
+            cv2.putText(debug_frame, f"Animal: {detection['confidence']:.2f}", 
+                       (int(bbox[0]), int(bbox[1])-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
-        # Save annotated frame
-        debug_path = video_debug_dir / f"frame_{frame_idx:04d}_annotated.jpg"
-        cv2.imwrite(str(debug_path), debug_frame)
+        cv2.imwrite(str(output_path), debug_frame)
     
     def process_video_with_features(self, video_path: Path) -> Tuple[Optional[Dict], Optional[np.ndarray]]:
-        """Process a single video with motion detection and extract features from the best detection."""
+        """Process a single video using real-time motion detection streaming."""
         analysis_logger.info(f"=== VIDEO PROCESSING START: {video_path.name} ===")
+        analysis_logger.info(f"PREPROCESSING_MODE: MOTION_DETECTION (streaming)")
         
-        # Reset motion detection state for each video
-        self.motion_history = []
-        self.previous_frame = None
-        if self.bg_subtractor is not None:
-            self.init_motion_detector()  # Reset background model
-        
-        # Extract frames from video
-        frames, timestamps = self.extract_frames(video_path)
-        if not frames:
-            analysis_logger.error(f"No frames extracted from {video_path.name}")
+        # Open video stream
+        cap = self._open_video_stream(video_path)
+        if cap is None:
             return None, None
         
-        # Create debug directory for this video
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration = total_frames / fps if fps > 0 else 0
+        
+        logger.info(f"🎬 Processing {video_path.name} ({duration:.1f}s, {total_frames} frames)")
+        logger.info(f"🎯 Streaming motion detection - analyzing every {self.frame_skip} frames")
+        
+        # Create debug directory
         video_debug_dir = self.debug_dir / video_path.stem
         video_debug_dir.mkdir(exist_ok=True)
         
-        # Process all frames and collect detections
+        # Reset motion detection for this video
+        self.init_motion_detector()
+        
+        # Process video frame by frame
         all_detections = []
         frames_processed = 0
+        frames_with_motion = 0
+        frames_with_detections = 0
+        saved_debug_frames = 0
         
-        analysis_logger.info("=== MOTION-BASED ANIMAL DETECTION START ===")
-        analysis_logger.info(f"Processing {len(frames)} frames with motion detection pre-filtering")
+        analysis_logger.info("=== MOTION DETECTION STREAMING START ===")
         
-        for frame_idx, (frame, timestamp) in enumerate(zip(frames, timestamps)):
-            frame_detections = self.enhanced_frame_analysis(
-                frame, frame_idx, video_debug_dir, timestamp
-            )
-            
-            # Add frame index to each detection for scoring
-            for detection in frame_detections:
-                detection['frame_idx'] = frame_idx
-                detection['timestamp'] = timestamp
-            
-            all_detections.extend(frame_detections)
-            frames_processed += 1
+        frame_idx = 0
+        progress_bar = tqdm(total=total_frames//self.frame_skip, desc="Motion Detection", unit="frames")
         
-        analysis_logger.info("=== MOTION-BASED ANIMAL DETECTION END ===")
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Skip frames for performance
+                if frame_idx % self.frame_skip != 0:
+                    frame_idx += 1
+                    continue
+                
+                timestamp_seconds = frame_idx / fps if fps > 0 else 0
+                frames_processed += 1
+                progress_bar.update(1)
+                
+                # Detect motion regions
+                motion_regions = self.detect_motion_regions(frame, frame_idx)
+                
+                if not motion_regions:
+                    analysis_logger.debug(f"Frame {frame_idx}: No motion detected")
+                    frame_idx += 1
+                    continue
+                
+                frames_with_motion += 1
+                analysis_logger.info(f"Frame {frame_idx}: Motion detected - {len(motion_regions)} regions")
+                
+                # Run ML analysis on motion regions
+                frame_detections = []
+                for region_idx, region in enumerate(motion_regions):
+                    crop_detections = self.run_ml_ensemble_on_crop(
+                        frame, region, frame_idx, region_idx, timestamp_seconds
+                    )
+                    frame_detections.extend(crop_detections)
+                
+                if frame_detections:
+                    frames_with_detections += 1
+                    
+                    # Save debug frame for first few detections
+                    if saved_debug_frames < 10:
+                        debug_path = video_debug_dir / f"detection_frame_{frame_idx:04d}.jpg"
+                        self._save_debug_frame_with_regions(frame, motion_regions, frame_detections, debug_path)
+                        saved_debug_frames += 1
+                
+                # Add metadata to detections
+                for detection in frame_detections:
+                    detection['frame_idx'] = frame_idx
+                    detection['timestamp'] = timestamp_seconds
+                
+                all_detections.extend(frame_detections)
+                frame_idx += 1
+                
+        finally:
+            progress_bar.close()
+            cap.release()
         
-        # Check for camera handling
+        analysis_logger.info("=== MOTION DETECTION STREAMING END ===")
+        logger.info(f"📊 Motion summary: {frames_with_motion}/{frames_processed} frames had motion")
+        logger.info(f"📊 Detection summary: {frames_with_detections} frames had animal detections")
+        logger.info(f"🛠️ Debug frames saved: {saved_debug_frames} to {video_debug_dir}")
+        
+        # Validate detections
         if self.detect_camera_handling(all_detections, frames_processed):
             analysis_logger.info("VIDEO RESULT: Rejected as camera handling")
+            logger.info(f"⏭️ Skipped {video_path.name} (camera handling detected)")
             self.mark_as_processed(video_path)
             return None, None
         
-        # Validate using ensemble logic
         if not self.ensemble_validation(all_detections):
             analysis_logger.info("VIDEO RESULT: Insufficient evidence for animal presence")
+            logger.info(f"⏭️ Skipped {video_path.name} (no animals detected)")
             self.mark_as_processed(video_path)
             return None, None
         
-        # Find best detection for feature extraction
+        # Find best detection
         best_detection, total_scored = self.score_and_find_best_detection(all_detections)
-        
         if best_detection is None:
-            analysis_logger.info("VIDEO RESULT: No suitable detection found for feature extraction")
+            analysis_logger.info("VIDEO RESULT: No suitable detection for feature extraction")
             self.mark_as_processed(video_path)
             return None, None
         
-        # Extract features from best detection
-        best_frame_idx = best_detection['frame_idx']
-        best_frame = frames[best_frame_idx]
+        # Get best frame and extract features
+        best_frame = self._get_frame_at_index(video_path, best_detection['frame_idx'])
+        if best_frame is None:
+            analysis_logger.error("Failed to retrieve best frame")
+            self.mark_as_processed(video_path)
+            return None, None
         
         features = self.extract_features_from_detection(best_frame, best_detection)
         
-        # Calculate detection statistics for the area ratio
+        # Build analysis result
         bbox = best_detection['bbox']
         area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
         frame_area = best_frame.shape[0] * best_frame.shape[1]
         area_ratio = area / frame_area
         
-        # Build analysis result
         analysis = {
             'video_path': video_path,
-            'animals_detected': ['animal'],  # Generic classification
+            'animals_detected': ['animal'],
             'detection_count': len(all_detections),
             'frames_processed': frames_processed,
-            'best_detection_frame': best_frame_idx,
+            'frames_with_motion': frames_with_motion,
+            'frames_with_detections': frames_with_detections,
+            'motion_efficiency': frames_with_motion / frames_processed if frames_processed > 0 else 0,
+            'best_detection_frame': best_detection['frame_idx'],
             'best_detection_timestamp': best_detection['timestamp'],
             'detection': {
                 'confidence': best_detection['confidence'],
                 'bbox': best_detection['bbox'],
                 'area_ratio': area_ratio,
-                'source': best_detection.get('source', 'unknown')
+                'source': best_detection.get('source', 'unknown'),
+                'motion_area': best_detection.get('motion_area', 0)
             },
             'processing_mode': 'motion_detection'
         }
         
         analysis_logger.info(f"=== VIDEO PROCESSING END: {video_path.name} - SUCCESS ===")
+        logger.info(f"✅ Successfully processed {video_path.name}")
         self.mark_as_processed(video_path)
         
         return analysis, features
@@ -475,10 +390,10 @@ class MotionDetectionVideoProcessor(VideoProcessorBase):
     def process_all_videos(self, video_filter=None):
         """Process all videos using motion detection approach."""
         analysis_logger.info("###############################################")
-        analysis_logger.info("BATCH PROCESSING SESSION START")
+        analysis_logger.info("BATCH PROCESSING SESSION START - MOTION DETECTION")
         analysis_logger.info("###############################################")
         
-        # Get videos to process (handles filter logic)
+        # Get videos to process
         videos_to_process = self.get_filtered_videos(video_filter)
         
         if not videos_to_process:
@@ -491,7 +406,7 @@ class MotionDetectionVideoProcessor(VideoProcessorBase):
             return
         
         analysis_logger.info(f"Videos to process: {[v.name for v in videos_to_process]}")
-        logger.info(f"🎬 Found {len(videos_to_process)} videos to process")
+        logger.info(f"🎬 Found {len(videos_to_process)} videos to process with motion detection")
         
         # Clear previous session data
         self.all_features = []
@@ -499,7 +414,10 @@ class MotionDetectionVideoProcessor(VideoProcessorBase):
         all_analyses = []
         
         # Process each video
-        for video_path in tqdm(videos_to_process, desc="Processing videos"):
+        for i, video_path in enumerate(videos_to_process):
+            analysis_logger.info(f"Processing video {i+1}/{len(videos_to_process)}: {video_path.name}")
+            logger.info(f"🎯 Processing video {i+1}/{len(videos_to_process)}: {video_path.name}")
+            
             try:
                 analysis, features = self.process_video_with_features(video_path)
                 if analysis:
@@ -512,16 +430,15 @@ class MotionDetectionVideoProcessor(VideoProcessorBase):
                         self.video_metadata.append(analysis)
                         analysis_logger.info(f"Features extracted: {len(features)} dimensions")
                     
-                    logger.info(f"✅ Successfully processed {video_path.name}")
+                    logger.info(f"✅ {video_path.name}: {analysis['detection_count']} detections, {analysis['frames_with_motion']} motion frames")
                 else:
-                    analysis_logger.info(f"VIDEO SKIPPED: {video_path.name} - No animals detected or camera handling")
-                    logger.info(f"⏭️ Skipped {video_path.name} (no animals detected)")
+                    analysis_logger.info(f"VIDEO SKIPPED: {video_path.name} - No animals detected")
                     
             except Exception as e:
                 analysis_logger.error(f"VIDEO ERROR: {video_path.name} - {e}")
                 logger.error(f"❌ Failed to process {video_path.name}: {e}")
         
-        # Perform clustering if we have features
+        # Perform clustering
         if self.all_features:
             analysis_logger.info("=== CLUSTERING START ===")
             logger.info(f"🧬 Performing clustering analysis on {len(self.all_features)} videos...")
@@ -540,15 +457,22 @@ class MotionDetectionVideoProcessor(VideoProcessorBase):
         self.generate_summary_report(all_analyses, clusters)
         
         analysis_logger.info("###############################################")
-        analysis_logger.info("BATCH PROCESSING SESSION END")
+        analysis_logger.info("BATCH PROCESSING SESSION END - MOTION DETECTION")
         analysis_logger.info("###############################################")
-        logger.info(f"🎉 Processing complete! Analyzed {len(all_analyses)} videos with animals")
+        logger.info(f"🎉 Motion detection processing complete! Analyzed {len(all_analyses)} videos with animals")
 
 def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Motion detection wildlife video processor')
     parser.add_argument('--videos', '-v', nargs='+', help='Optional list of video indices (e.g. 7 8 9) or names (e.g. IMG_0007.MP4) to process')
+    
+    # Add common arguments from base class
+    MotionDetectionVideoProcessor.setup_common_arguments(parser)
+    
+    # Add motion detection specific arguments
+    MotionDetectionVideoProcessor.setup_motion_detection_arguments(parser)
+    
     args = parser.parse_args()
     
     # Convert video arguments to appropriate format
@@ -563,8 +487,13 @@ def main():
                 # If not an integer, treat as string
                 video_filter.append(video)
     
+    # Set environment variables from parsed arguments (including motion detection)
+    MotionDetectionVideoProcessor.set_environment_from_args(args, include_motion=True)
+    
     try:
         processor = MotionDetectionVideoProcessor()
+        logger.info(f"🎯 MegaDetector version: {args.megadetector_version}")
+        logger.info(f"🤖 Ensemble models: {args.ensemble}")
         processor.process_all_videos(video_filter=video_filter)
     except KeyboardInterrupt:
         logger.info("🛑 Processing interrupted by user")

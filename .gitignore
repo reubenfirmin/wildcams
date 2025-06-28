@@ -17,3 +17,6 @@ logs/
 
 # Analysis output
 videos/analysis/
+
+# Model cache
+models_cache/

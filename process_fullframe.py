@@ -31,8 +31,8 @@ from tqdm import tqdm
 from video_processor_base import VideoProcessorBase
 
 # Get loggers
-logger = logging.getLogger(__name__)
-analysis_logger = logging.getLogger('analysis')
+logger = logging.getLogger('wildcams')
+analysis_logger = logger
 
 class FullFrameVideoProcessor(VideoProcessorBase):
     """Full-frame video processor using complete ML ensemble on entire frames."""
@@ -240,6 +240,10 @@ def main():
     
     parser = argparse.ArgumentParser(description='Full-frame wildlife video processor')
     parser.add_argument('--videos', '-v', nargs='+', help='Optional list of video indices (e.g. 7 8 9) or names (e.g. IMG_0007.MP4) to process')
+    
+    # Add common arguments from base class
+    FullFrameVideoProcessor.setup_common_arguments(parser)
+    
     args = parser.parse_args()
     
     # Convert video arguments to appropriate format
@@ -254,8 +258,13 @@ def main():
                 # If not an integer, treat as string
                 video_filter.append(video)
     
+    # Set environment variables from parsed arguments
+    FullFrameVideoProcessor.set_environment_from_args(args)
+    
     try:
         processor = FullFrameVideoProcessor()
+        logger.info(f"🎯 MegaDetector version: {args.megadetector_version}")
+        logger.info(f"🤖 Ensemble models: {args.ensemble}")
         processor.process_all_videos(video_filter=video_filter)
     except KeyboardInterrupt:
         logger.info("🛑 Processing interrupted by user")

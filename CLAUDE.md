@@ -7,37 +7,44 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 
 ### Core Components
 1. **SD Card Watcher** (`sd_watcher.py`) - Automatically detects and downloads videos from camera SD cards
-2. **Modular Processing System**:
+2. **Unified Processing System**:
+   - **`process.py`** - Unified processor with strategy selection (`-s ff|md`)
    - **`video_processor_base.py`** - Shared base class with common functionality
    - **`process_fullframe.py`** - Full-frame ML ensemble approach
-   - **`process_motiondetection.py`** - Motion detection + crop-based processing
+   - **`process_motiondetection.py`** - Motion detection + crop-based streaming processing
    - **`ml_detection.py`** - Shared 5-model ML ensemble
 3. **Nix Development Environment** (`flake.nix`) - Reproducible development setup with uv Python package manager
 
 ### Processing Approaches
 
-#### Full-Frame Processing (`process-ff`)
+#### Full-Frame Processing (`process -s ff` or `process-ff`)
 - Runs complete 5-model ensemble on entire frames
 - Enhanced preprocessing (histogram equalization)
 - Multi-scale analysis (0.8x, 1.2x) 
 - Maximum detection accuracy but slower processing
+- Samples frames evenly throughout video (default: 20 frames)
 
-#### Motion Detection Processing (`process-md`)
-- Motion detection pre-filtering using MOG2/KNN background subtraction
-- ML ensemble only on motion region crops
-- 6-7x performance improvement expected
-- Intelligent filtering for vegetation, aspect ratios, temporal consistency
-- Better focus on actual moving animals
+#### Motion Detection Processing (`process -s md` or `process-md`)
+- **Real-time streaming motion detection** using MOG2/KNN background subtraction
+- **Frame-by-frame analysis** with temporal background modeling
+- ML ensemble only on detected motion region crops
+- **Camera trap optimized**: Focuses on sustained animal movement vs brief noise
+- **Configurable filtering**: Area thresholds, aspect ratios, region limits
+- Expected 6-7x performance improvement while maintaining accuracy
 
 ### Five-Model ML Ensemble
 1. **YOLOv8x** (primary - highest accuracy)
 2. **YOLOv8m** (backup - medium model)  
 3. **YOLOv8n** (MegaDetector fallback - fastest)
-4. **MegaDetector v6** (wildlife-specific via PyTorch-Wildlife) ✅ Fixed tensor format issues
-5. **DeepFaune** (European wildlife model via PyTorch-Wildlife) ✅ Fixed supervision.Detections parsing
+4. **MegaDetector v6** (wildlife-specific via PyTorch-Wildlife) - **MDV6-rtdetr-c for maximum accuracy**
+5. **DeepFaune** (classification model, not used in detection ensemble)
+
+**Model Selection Priority**: **Accuracy over speed** - using MDV6-rtdetr-c variant for maximum detection accuracy. RT-DETR architectures typically achieve highest accuracy in object detection, chosen specifically for research-quality wildlife analysis where detection precision is prioritized over processing speed.
 
 ### Enhanced Processing Pipeline
-1. **Frame Extraction**: Evenly sample up to 200 frames throughout each video
+1. **Frame Processing**: 
+   - **Full-frame**: Sample up to 20 frames evenly throughout video
+   - **Motion detection**: Stream through video frame-by-frame, analyze motion regions only
 2. **Preprocessing**: 
    - Motion detection (MD approach) or full-frame (FF approach)
    - Histogram equalization for jungle lighting conditions
@@ -67,7 +74,7 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 ## Configuration (.env)
 ```bash
 # Video processing
-MAX_FRAMES_PER_VIDEO=200
+MAX_FRAMES_PER_VIDEO=20          # Reduced from 200 for faster processing
 CONFIDENCE_THRESHOLD=0.1
 
 # Validation thresholds (tuned for Costa Rica jungle footage)
@@ -81,11 +88,17 @@ DETECTION_DENSITY_THRESHOLD=15.0
 LOW_CONFIDENCE_RATIO_THRESHOLD=0.7
 LOW_CONFIDENCE_CUTOFF=0.2
 
-# Motion detection settings
+# Motion detection settings (camera trap optimized)
 MOTION_METHOD=MOG2
-MOTION_VAR_THRESHOLD=16
-MIN_MOTION_AREA=500
-MAX_MOTION_AREA=100000
+MOTION_VAR_THRESHOLD=32           # Less sensitive to small movements
+MIN_MOTION_AREA=2000             # Focus on significant motion only
+MAX_MOTION_AREA=80000            # Avoid full-frame motion detection
+MOTION_HISTORY=100               # Background model adaptation speed
+MAX_REGIONS_PER_FRAME=10         # Limit processed regions to reduce noise
+MIN_REGION_WIDTH=30              # Filter out thin/small regions
+MIN_REGION_HEIGHT=30
+MAX_ASPECT_RATIO=5.0             # Reject overly elongated regions
+MOTION_MARGIN=30                 # Pixels to expand regions for ML context
 ```
 
 ## Commands
@@ -96,11 +109,60 @@ stop       # Stop daemon
 logs       # View logs
 check      # Check daemon status
 
-# Video processing (new modular commands)
-process-ff                    # Full-frame processing (all videos)
-process-md                    # Motion detection processing (all videos)
-process-ff -v 7 8 9          # Process specific videos (full-frame)
-process-md -v IMG_0015.MP4    # Process specific video (motion detection)
+# Unified video processing 
+process -s ff -v 7 8 9           # Full-frame strategy
+process -s md -v 7 8 9           # Motion detection strategy
+process -s ff -m MDV6-yolov9-e   # Custom MegaDetector model
+process -s md -e yolov8x,yolov8m # Custom ensemble
+
+# Direct processing commands (legacy)
+process-ff                       # Full-frame processing (all videos)
+process-md                       # Motion detection processing (all videos)
+process-ff -v 7 8 9             # Process specific videos (full-frame)
+process-md -v IMG_0015.MP4       # Process specific video (motion detection)
+
+# Model configuration options
+process -s ff -m MDV6-yolov9-e                     # Use balanced YOLOv9 variant
+process -s ff -m MDV6-rtdetr-c                     # Use RT-DETR (highest accuracy)
+process -s ff -e megadetector_v6                   # Use only MegaDetector v6
+process -s md -e yolov8x,megadetector_v6          # Custom ensemble combination
+
+# Motion detection tuning examples
+process -s md --min-motion-area 1000 --motion-var-threshold 20    # More sensitive
+process -s md --max-regions-per-frame 5 --min-region-width 50     # Stricter filtering
+process -s md --motion-margin 50 --max-aspect-ratio 3.0           # Better crop context
+
+# Full-frame tuning examples  
+process -s ff --conf 0.05 --max-frames 50         # Lower threshold, fewer frames
+process -s ff --yolo-high-conf 0.5 --weak-evidence-threshold 0.3  # Stricter validation
+
+# Available MegaDetector variants (-m):
+# MDV6-yolov9-c, MDV6-yolov9-e, MDV6-yolov10-c, MDV6-yolov10-e, MDV6-rtdetr-c
+
+# Available ensemble models (-e):
+# yolov8x, yolov8m, yolov8n, megadetector_v6 (comma-separated)
+
+# Common Parameters (both strategies):
+# --conf                          Detection confidence threshold (0.0-1.0, default: 0.1)
+# --max-frames                    Max frames per video (1-500, default: 20)
+# --megadetector-high-conf        MegaDetector validation threshold (0.0-1.0, default: 0.3)
+# --yolo-high-conf               YOLO validation threshold (0.0-1.0, default: 0.4)
+# --min-yolo-detections          Min YOLO detections for validation (1-20, default: 3)
+# --weak-evidence-threshold      Weak evidence validation threshold (0.0-1.0, default: 0.25)
+# --detection-density-threshold  Camera handling detection threshold (1.0-50.0, default: 15.0)
+# --clustering-eps               DBSCAN clustering epsilon (0.1-1.0, default: 0.3)
+
+# Motion Detection Specific Parameters:
+# --motion-method                Motion detection method (MOG2/KNN, default: MOG2)
+# --motion-var-threshold         Variance threshold - higher = less sensitive (default: 32)
+# --min-motion-area              Min motion area pixels (default: 2000)
+# --max-motion-area              Max motion area pixels (default: 80000)
+# --motion-history               Background history frames (default: 100)
+# --max-regions-per-frame        Max regions processed per frame (default: 10)
+# --min-region-width             Min region width pixels (default: 30)
+# --min-region-height            Min region height pixels (default: 30)
+# --max-aspect-ratio             Max width/height ratio (default: 5.0)
+# --motion-margin                Margin to expand regions pixels (default: 30)
 ```
 
 ## File Structure
@@ -129,40 +191,50 @@ wildcams/
 ## Current Status
 ✅ **Working**: Animal detection, false positive filtering, clustering
 ✅ **Validated**: Successfully distinguishes real animals (videos 7,8,9,11,12) from false positives
-✅ **Fixed**: PyTorch-Wildlife tensor format issues - MegaDetector v6 and DeepFaune now working
+✅ **Fixed**: PyTorch-Wildlife KeyError issues - MegaDetector v6 now handles extended class IDs properly
 ✅ **Modular**: Clean separation between preprocessing approaches and shared functionality
-✅ **Logging**: Centralized logging with preprocessing mode identification for analysis comparison
-✅ **Architecture**: Removed 8 obsolete files, clean codebase with focused responsibilities
+✅ **Unified**: Single `process.py` script with strategy selection plus legacy direct commands
+✅ **Configurable**: All parameters exposed via CLI with sensible defaults
+✅ **Logging**: Simplified single logger with emoji highlights for significant steps
 
 ## Recent Major Updates
 
-### Modular Architecture (Latest)
-- **Extracted Common Functionality**: `video_processor_base.py` contains shared logic
-- **Clean Separation**: Each processor focuses only on its preprocessing approach
-- **DRY Principle**: No duplicate code between full-frame and motion detection
-- **Maintainable**: Changes to common logic update both approaches automatically
+### MegaDetector v6 Class ID Fix (Latest)
+- **Issue Resolved**: Fixed KeyError when MegaDetector v6 detects classes outside standard mapping (0=animal, 1=person, 2=vehicle)
+- **Raw Class IDs**: Now captures and logs extended class IDs (102, 147, 166, 197, 278) for analysis
+- **Coordinate Fix**: Proper handling of bounding box coordinates from raw Ultralytics results
+- **No Suppression**: All model output visible, raw class IDs logged for future analysis
+
+### Motion Detection Optimization (Latest)
+- **Camera Trap Focused**: Tuned for sustained animal movement vs brief noise/wind
+- **Streaming Implementation**: True frame-by-frame processing with temporal background modeling
+- **Noise Reduction**: Aggressive morphological filtering, aspect ratio limits, area thresholds
+- **Configurable Parameters**: All motion detection settings exposed via CLI
+- **Performance Optimized**: Max 10 regions per frame, focus on significant motion only
+
+### Unified Architecture (Latest)
+- **Single Entry Point**: `process.py` with `-s ff|md` strategy selection
+- **Legacy Support**: Direct `process-ff` and `process-md` commands still available
+- **Simplified Logging**: Single log file per session with emoji highlights
+- **CLI Consistency**: All parameters available across both strategies
+- **No Hardcoding**: Every threshold and setting configurable via command line
 
 ### PyTorch-Wildlife Integration (Fixed)
-- **MegaDetector v6**: Fixed `'tuple' object has no attribute 'get'` error via proper supervision.Detections handling
-- **DeepFaune**: Fixed `only length-1 arrays can be converted to Python scalars` via tensor conversion
-- **Transform Pipeline**: Proper preprocessing with tensor-to-numpy conversion for API compatibility
-- **Model Loading**: Successfully loading and running all 5 models in ensemble
-
-### Logging Enhancement
-- **Preprocessing Mode Identification**: Logs clearly show FULL_FRAME vs MOTION_DETECTION mode
-- **Ensemble Step Tracking**: Each model execution logged with ENSEMBLE_STEP_1-5
-- **Motion Analysis**: Detailed logging of motion regions, crops, and scaling
-- **Centralized Storage**: All logs go to `logs/` directory with timestamps
+- **MegaDetector v6**: Handles unknown class IDs gracefully, captures raw detections
+- **Model Caching**: Proper TORCH_HOME and PYTORCH_WILDLIFE_CACHE setup
+- **Extended Classes**: Logs class IDs beyond standard MegaDetector mapping
+- **Model Loading**: All ensemble models working correctly with visible initialization
 
 ### Performance Optimization
-- **Motion Detection Strategy**: Comprehensive implementation with intelligent filtering
+- **Frame Reduction**: Default max frames reduced from 200 → 20 for faster processing
+- **Motion Detection Strategy**: Real streaming analysis with intelligent noise filtering
 - **Expected Speedup**: 6-7x performance improvement via motion region crops
 - **Filter Override**: When video filter provided (`-v`), ignores .processed files for forced reprocessing
 
 ## Known Issues
 - Videos 1-6 were false positives (now filtered by ensemble validation)
 - Videos 13-19 are camera handling (now detected and filtered)
-- Small artifact detections occasionally occur (improved with ensemble validation)
+- MegaDetector v6 detects extended class IDs (102, 147, 166, 197, 278) beyond standard mapping - logged for analysis
 
 ## Validation Results
 **Tested on Costa Rica jungle footage**:

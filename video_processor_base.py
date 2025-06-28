@@ -59,10 +59,12 @@ class VideoProcessorBase:
         self.output_dir = self.video_dir / 'analysis'
         self.debug_dir = self.output_dir / 'debug_frames'
         self.logs_dir = Path('./logs')
+        self.models_cache_dir = Path('./models_cache')
         
         # Create directories
         self.output_dir.mkdir(exist_ok=True)
         self.logs_dir.mkdir(exist_ok=True)
+        self.models_cache_dir.mkdir(exist_ok=True)
         
         # Setup logging for this session
         self.setup_logging()
@@ -76,9 +78,13 @@ class VideoProcessorBase:
         # Processing parameters - HIGH QUALITY for wildlife detection
         self.frame_skip = int(os.getenv('FRAME_SKIP', '15'))  
         self.confidence_threshold = float(os.getenv('CONFIDENCE_THRESHOLD', '0.1'))
-        self.max_frames_per_video = int(os.getenv('MAX_FRAMES_PER_VIDEO', '200'))
+        self.max_frames_per_video = int(os.getenv('MAX_FRAMES_PER_VIDEO', '20'))
         self.clustering_eps = float(os.getenv('CLUSTERING_EPS', '0.3'))
         self.min_samples = int(os.getenv('MIN_SAMPLES', '2'))
+        
+        # Model configuration parameters
+        self.megadetector_version = os.getenv('MEGADETECTOR_VERSION', 'MDV6-rtdetr-c')
+        self.ensemble_models = os.getenv('ENSEMBLE_MODELS', 'yolov8x,yolov8m,yolov8n,megadetector_v6').split(',')
         
         # Animal validation thresholds
         self.megadetector_high_conf = float(os.getenv('MEGADETECTOR_HIGH_CONFIDENCE', '0.3'))
@@ -97,70 +103,169 @@ class VideoProcessorBase:
         self.video_metadata = []
         
         # Initialize ML detection ensemble after all parameters are set
-        self.ml_ensemble = MLDetectionEnsemble(confidence_threshold=self.confidence_threshold)
+        self.ml_ensemble = MLDetectionEnsemble(
+            confidence_threshold=self.confidence_threshold,
+            megadetector_version=self.megadetector_version,
+            ensemble_models=self.ensemble_models,
+            cache_dir=self.models_cache_dir
+        )
+        
+        # Log model configuration after everything is initialized
+        self._log_model_configuration()
         
         logger.info(f"🎬 Video processor base initialized")
         logger.info(f"📁 Video directory: {self.video_dir}")
         logger.info(f"📊 Analysis output: {self.output_dir}")
         logger.info(f"📋 Logs directory: {self.logs_dir}")
     
+    @staticmethod
+    def setup_common_arguments(parser):
+        """Add common arguments to an argument parser."""
+        # Model configuration
+        parser.add_argument('--megadetector-version', '-m', default='MDV6-rtdetr-c', 
+                           choices=['MDV6-yolov9-c', 'MDV6-yolov9-e', 'MDV6-yolov10-c', 'MDV6-yolov10-e', 'MDV6-rtdetr-c'],
+                           help='MegaDetector v6 variant to use (default: MDV6-rtdetr-c)')
+        parser.add_argument('--ensemble', '-e', default='yolov8x,yolov8m,yolov8n,megadetector_v6',
+                           help='Comma-separated list of models to use in ensemble (default: yolov8x,yolov8m,yolov8n,megadetector_v6)')
+        
+        # Processing parameters
+        parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.1,
+                           help='Confidence threshold for detections (default: 0.1)')
+        parser.add_argument('--max-frames', type=int, default=20,
+                           help='Maximum frames to extract per video (default: 20)')
+        parser.add_argument('--frame-skip', type=int, default=15,
+                           help='Frame skip for video processing (default: 15)')
+        
+        # Validation thresholds
+        parser.add_argument('--megadetector-high-conf', type=float, default=0.3,
+                           help='High confidence threshold for MegaDetector (default: 0.3)')
+        parser.add_argument('--yolo-high-conf', type=float, default=0.4,
+                           help='High confidence threshold for YOLO models (default: 0.4)')
+        parser.add_argument('--min-yolo-detections', type=int, default=3,
+                           help='Minimum YOLO detections for validation (default: 3)')
+        parser.add_argument('--weak-evidence-threshold', type=float, default=0.25,
+                           help='Threshold for weak evidence validation (default: 0.25)')
+        parser.add_argument('--wildlife-model-confidence', type=float, default=0.2,
+                           help='Confidence threshold for wildlife-specific models (default: 0.2)')
+        
+        # Camera handling detection
+        parser.add_argument('--detection-density-threshold', type=float, default=15.0,
+                           help='Detection density threshold for camera handling detection (default: 15.0)')
+        parser.add_argument('--low-confidence-ratio-threshold', type=float, default=0.7,
+                           help='Low confidence ratio threshold for camera handling (default: 0.7)')
+        parser.add_argument('--low-confidence-cutoff', type=float, default=0.2,
+                           help='Low confidence cutoff for camera handling detection (default: 0.2)')
+        
+        # Clustering parameters
+        parser.add_argument('--clustering-eps', type=float, default=0.3,
+                           help='DBSCAN eps parameter for clustering (default: 0.3)')
+        parser.add_argument('--min-samples', type=int, default=2,
+                           help='DBSCAN min_samples parameter for clustering (default: 2)')
+    
+    @staticmethod
+    def setup_motion_detection_arguments(parser):
+        """Add motion detection specific arguments to an argument parser."""
+        parser.add_argument('--motion-method', choices=['MOG2', 'KNN'], default='MOG2',
+                           help='Motion detection method (default: MOG2)')
+        parser.add_argument('--motion-var-threshold', type=int, default=32,
+                           help='Motion detection variance threshold - higher = less sensitive (default: 32)')
+        parser.add_argument('--min-motion-area', type=int, default=2000,
+                           help='Minimum motion area threshold in pixels (default: 2000)')
+        parser.add_argument('--max-motion-area', type=int, default=80000,
+                           help='Maximum motion area threshold in pixels (default: 80000)')
+        parser.add_argument('--motion-history', type=int, default=100,
+                           help='Motion detection background history frames (default: 100)')
+        parser.add_argument('--max-regions-per-frame', type=int, default=10,
+                           help='Maximum motion regions to process per frame (default: 10)')
+        parser.add_argument('--min-region-width', type=int, default=30,
+                           help='Minimum motion region width in pixels (default: 30)')
+        parser.add_argument('--min-region-height', type=int, default=30,
+                           help='Minimum motion region height in pixels (default: 30)')
+        parser.add_argument('--max-aspect-ratio', type=float, default=5.0,
+                           help='Maximum width/height aspect ratio for motion regions (default: 5.0)')
+        parser.add_argument('--motion-margin', type=int, default=30,
+                           help='Margin to expand motion regions for ML context (default: 30)')
+    
+    @staticmethod
+    def set_environment_from_args(args, include_motion=False):
+        """Set environment variables from parsed arguments."""
+        import os
+        os.environ['MEGADETECTOR_VERSION'] = args.megadetector_version
+        os.environ['ENSEMBLE_MODELS'] = args.ensemble
+        os.environ['CONFIDENCE_THRESHOLD'] = str(args.confidence_threshold)
+        os.environ['MAX_FRAMES_PER_VIDEO'] = str(args.max_frames)
+        os.environ['FRAME_SKIP'] = str(args.frame_skip)
+        os.environ['MEGADETECTOR_HIGH_CONFIDENCE'] = str(args.megadetector_high_conf)
+        os.environ['YOLO_HIGH_CONFIDENCE'] = str(args.yolo_high_conf)
+        os.environ['MIN_YOLO_DETECTIONS'] = str(args.min_yolo_detections)
+        os.environ['WEAK_EVIDENCE_THRESHOLD'] = str(args.weak_evidence_threshold)
+        os.environ['WILDLIFE_MODEL_CONFIDENCE'] = str(args.wildlife_model_confidence)
+        os.environ['DETECTION_DENSITY_THRESHOLD'] = str(args.detection_density_threshold)
+        os.environ['LOW_CONFIDENCE_RATIO_THRESHOLD'] = str(args.low_confidence_ratio_threshold)
+        os.environ['LOW_CONFIDENCE_CUTOFF'] = str(args.low_confidence_cutoff)
+        os.environ['CLUSTERING_EPS'] = str(args.clustering_eps)
+        os.environ['MIN_SAMPLES'] = str(args.min_samples)
+        
+        # Motion detection specific parameters
+        if include_motion:
+            os.environ['MOTION_METHOD'] = args.motion_method
+            os.environ['MOTION_VAR_THRESHOLD'] = str(args.motion_var_threshold)
+            os.environ['MIN_MOTION_AREA'] = str(args.min_motion_area)
+            os.environ['MAX_MOTION_AREA'] = str(args.max_motion_area)
+            os.environ['MOTION_HISTORY'] = str(args.motion_history)
+            os.environ['MAX_REGIONS_PER_FRAME'] = str(args.max_regions_per_frame)
+            os.environ['MIN_REGION_WIDTH'] = str(args.min_region_width)
+            os.environ['MIN_REGION_HEIGHT'] = str(args.min_region_height)
+            os.environ['MAX_ASPECT_RATIO'] = str(args.max_aspect_ratio)
+            os.environ['MOTION_MARGIN'] = str(args.motion_margin)
+    
     def setup_logging(self):
-        """Setup logging configuration to write to logs directory."""
+        """Setup single logger to file and console."""
         # Create timestamp for this session
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        # Setup analysis logger (detailed debugging)
-        global analysis_logger
-        analysis_logger = logging.getLogger('analysis')
-        
-        # Remove any existing handlers to avoid duplicates
-        for handler in analysis_logger.handlers[:]:
-            analysis_logger.removeHandler(handler)
-        
-        # Create analysis log file handler
-        analysis_log_file = self.logs_dir / f'analysis_debug_{timestamp}.log'
-        analysis_handler = logging.FileHandler(analysis_log_file)
-        analysis_handler.setLevel(logging.DEBUG)
-        analysis_formatter = logging.Formatter(
-            '%(asctime)s [ANALYSIS] %(message)s', 
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        analysis_handler.setFormatter(analysis_formatter)
-        analysis_logger.addHandler(analysis_handler)
-        analysis_logger.setLevel(logging.DEBUG)
-        analysis_logger.propagate = False  # Prevent duplicate messages in main log
-        
-        # Setup main logger (general info)
-        global logger
-        logger = logging.getLogger(__name__)
+        # Setup single logger
+        global logger, analysis_logger
+        logger = logging.getLogger('wildcams')
+        analysis_logger = logger  # Use same logger
         
         # Remove any existing handlers to avoid duplicates
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
         
-        # Create main log file handler
-        main_log_file = self.logs_dir / f'processing_{timestamp}.log'
-        main_handler = logging.FileHandler(main_log_file)
-        main_handler.setLevel(logging.INFO)
-        main_formatter = logging.Formatter(
-            '%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d - %(message)s',
+        # Create log file handler
+        log_file = self.logs_dir / f'wildcams_{timestamp}.log'
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
+        file_formatter = logging.Formatter(
+            '%(asctime)s %(message)s', 
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        main_handler.setFormatter(main_formatter)
-        logger.addHandler(main_handler)
-        logger.setLevel(logging.INFO)
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
         
-        # Also keep console output
+        # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_formatter = logging.Formatter('%(message)s')
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
         
+        logger.setLevel(logging.DEBUG)
+        
         # Log the setup
         logger.info(f"📋 Logging initialized - session {timestamp}")
-        logger.info(f"📋 Analysis log: {analysis_log_file}")
-        logger.info(f"📋 Main log: {main_log_file}")
+        logger.info(f"📋 Log file: {log_file}")
+    
+    def _log_model_configuration(self):
+        """Log the model configuration."""
+        logger.info("=" * 80)
+        logger.info("🎯 MODEL CONFIGURATION")
+        logger.info("=" * 80)
+        logger.info(f"MegaDetector Version: {self.megadetector_version}")
+        logger.info(f"Ensemble Models: {', '.join(self.ensemble_models)}")
+        logger.info(f"Confidence Threshold: {self.confidence_threshold}")
+        logger.info("=" * 80)
     
     def get_unprocessed_videos(self) -> List[Path]:
         """Get list of videos that haven't been processed yet."""
@@ -539,8 +644,13 @@ class VideoProcessorBase:
         analysis_file = self.output_dir / f"{video_path.stem}_analysis.json"
         
         try:
+            # Convert Path objects to strings for JSON serialization
+            analysis_copy = analysis.copy()
+            if 'video_path' in analysis_copy:
+                analysis_copy['video_path'] = str(analysis_copy['video_path'])
+            
             with open(analysis_file, 'w') as f:
-                json.dump(analysis, f, indent=2)
+                json.dump(analysis_copy, f, indent=2)
             logger.debug(f"💾 Saved analysis to {analysis_file}")
         except Exception as e:
             logger.error(f"❌ Failed to save analysis: {e}")
