@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Logs and runtime files
+logs/
+*.log
+.sd_watcher.pid
+.sd_watcher.log
+
+# Analysis output
+videos/analysis/
