@@ -1,0 +1,12 @@
+[project]
+name = "wildcams"
+version = "0.1.0"
+description = "Automatic SD card video downloader for wildlife cameras"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+sd-watcher = "sd_watcher:main"
