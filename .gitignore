@@ -20,3 +20,9 @@ videos/analysis/
 
 # Model cache
 models_cache/
+
+.direnv
+.idea
+.python-version
+uv.lock
+*.pt

@@ -39,13 +39,35 @@ logger = logging.getLogger('wildcams')
 analysis_logger = logger
 
 class MLDetectionEnsemble:
-    """Ensemble ML detection system for wildlife video processing."""
+    """Enhanced ensemble ML detection system with accuracy improvements."""
     
     def __init__(self, confidence_threshold: float = 0.1, megadetector_version: str = 'MDV6-rtdetr-c', ensemble_models: List[str] = None, cache_dir: Optional['Path'] = None):
         self.confidence_threshold = confidence_threshold
         self.megadetector_version = megadetector_version
         self.ensemble_models = ensemble_models or ['yolov8x', 'yolov8m', 'yolov8n', 'megadetector_v6']
         self.cache_dir = cache_dir
+        
+        # Accuracy Enhancement 2: Model-specific confidence thresholds (optimized for recall)
+        self.model_thresholds = {
+            'yolov8x': 0.05,        # Lower for primary model
+            'yolov8m': 0.08,        # Slightly higher for backup
+            'yolov8n': 0.12,        # Higher for fallback
+            'megadetector_v6': 0.1, # Wildlife-specific threshold
+            'deepfaune': 0.15       # Conservative for classification model
+        }
+        
+        # Accuracy Enhancement 3: Multi-scale detection settings
+        self.detection_scales = [0.8, 1.0, 1.2, 1.5]
+        
+        # Accuracy Enhancement 1: Test-Time Augmentation settings
+        self.enable_tta = True
+        self.tta_transforms = [
+            'original',
+            'horizontal_flip', 
+            'brightness_adjust',
+            'contrast_adjust',
+            'gaussian_blur'
+        ]
         
         # Model initialization flags
         self.detector = None
@@ -160,6 +182,139 @@ class MLDetectionEnsemble:
                 
         except Exception as e:
             logger.error(f"❌ Failed to initialize ML ensemble: {e}")
+    
+    def apply_tta_transforms(self, frame: np.ndarray) -> List[Tuple[np.ndarray, str]]:
+        """
+        Accuracy Enhancement 1: Apply Test-Time Augmentation transforms.
+        
+        Returns:
+            List of (transformed_frame, transform_name) tuples
+        """
+        transforms = []
+        
+        # Original frame
+        transforms.append((frame.copy(), 'original'))
+        
+        if not self.enable_tta:
+            return transforms
+        
+        # Horizontal flip
+        if 'horizontal_flip' in self.tta_transforms:
+            flipped = cv2.flip(frame, 1)
+            transforms.append((flipped, 'horizontal_flip'))
+        
+        # Brightness adjustment (+20%)
+        if 'brightness_adjust' in self.tta_transforms:
+            bright = cv2.convertScaleAbs(frame, alpha=1.0, beta=20)
+            transforms.append((bright, 'brightness_adjust'))
+        
+        # Contrast adjustment (1.2x)
+        if 'contrast_adjust' in self.tta_transforms:
+            contrast = cv2.convertScaleAbs(frame, alpha=1.2, beta=0)
+            transforms.append((contrast, 'contrast_adjust'))
+        
+        # Gaussian blur (slight)
+        if 'gaussian_blur' in self.tta_transforms:
+            blurred = cv2.GaussianBlur(frame, (3, 3), 0.5)
+            transforms.append((blurred, 'gaussian_blur'))
+        
+        return transforms
+    
+    def apply_multiscale_detection(self, frame: np.ndarray) -> List[Tuple[np.ndarray, float, str]]:
+        """
+        Accuracy Enhancement 3: Apply multi-scale detection.
+        
+        Returns:
+            List of (scaled_frame, scale_factor, scale_name) tuples
+        """
+        scaled_frames = []
+        
+        for scale in self.detection_scales:
+            scaled_frame = cv2.resize(frame, None, fx=scale, fy=scale)
+            scale_name = f"scale_{scale:.1f}x"
+            scaled_frames.append((scaled_frame, scale, scale_name))
+        
+        return scaled_frames
+    
+    def apply_advanced_nms(self, detections: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
+        """
+        Accuracy Enhancement 5: Apply advanced Non-Maximum Suppression across ensemble.
+        
+        Args:
+            detections: List of detection dictionaries
+            iou_threshold: IoU threshold for NMS
+            
+        Returns:
+            Filtered detections after NMS
+        """
+        if len(detections) <= 1:
+            return detections
+        
+        # Convert to format needed for NMS
+        import torchvision.ops as ops
+        
+        boxes = []
+        scores = []
+        sources = []
+        
+        for det in detections:
+            boxes.append(det['bbox'])
+            scores.append(det['confidence'])
+            sources.append(det['source'])
+        
+        if not boxes:
+            return []
+        
+        # Convert to tensors
+        boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
+        scores_tensor = torch.tensor(scores, dtype=torch.float32)
+        
+        # Apply NMS
+        keep_indices = ops.nms(boxes_tensor, scores_tensor, iou_threshold)
+        
+        # Return filtered detections
+        filtered_detections = []
+        for idx in keep_indices:
+            filtered_detections.append(detections[idx.item()])
+        
+        analysis_logger.info(f"🧹 ADVANCED NMS: {len(detections)} → {len(filtered_detections)} detections (removed {len(detections) - len(filtered_detections)} duplicates)")
+        
+        return filtered_detections
+    
+    def run_single_model_detection(self, model, model_name: str, frame: np.ndarray, 
+                                 timestamp_seconds: float = 0.0) -> List[Dict]:
+        """
+        Run detection on a single model with model-specific threshold.
+        
+        Returns:
+            List of detections from this model
+        """
+        if model is None:
+            return []
+        
+        # Use model-specific threshold
+        threshold = self.model_thresholds.get(model_name, self.confidence_threshold)
+        
+        try:
+            results = model(frame, conf=threshold, verbose=False)
+            detections = []
+            
+            for result in results:
+                for box in result.boxes:
+                    detection = {
+                        'confidence': float(box.conf),
+                        'bbox': box.xyxy.tolist()[0],
+                        'source': f'{model_name}',
+                        'model_threshold': threshold
+                    }
+                    detections.append(detection)
+            
+            analysis_logger.info(f"🔍 {model_name.upper()}: {len(detections)} detections (threshold: {threshold})")
+            return detections
+            
+        except Exception as e:
+            analysis_logger.error(f"❌ {model_name} detection failed: {e}")
+            return []
     
     def run_ensemble_detection(
         self, 

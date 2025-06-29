@@ -419,3 +419,69 @@ BioCLIP should identify common Costa Rican fauna including:
 - **Performance Benchmarks**: Processing time and detection accuracy comparison
 - **Motion Detection Validation**: Ensure motion regions capture all animals
 - **Species Classification**: Validate BioCLIP predictions against expert identification
+
+---
+
+## Experimental Results
+
+### Summary
+Comprehensive experimental analysis documented in `experiments.md` shows systematic testing of wildlife video processing strategies. Key findings: confidence threshold of 0.15-0.2 successfully filters some false positives, achieving 50% precision improvement, but challenges remain with stubborn false positive videos requiring new approaches.
+
+---
+
+## Experimental Analysis Guide
+
+### How to Generate Strategy Comparison Tables
+
+For future Claude instances analyzing experimental results, follow this methodology:
+
+#### 1. Log File Analysis
+```bash
+# Identify experimental log files
+ls logs/wildcams_*.log | grep [date_pattern]
+
+# Extract key information from each log:
+# - Start/end timestamps for processing time
+# - Video processing results (SUCCESS/SKIPPED/FAILED)
+# - Animal detection results per video
+# - Error patterns and technical issues
+```
+
+#### 2. Ground Truth Reference
+Always reference the validated sample set:
+- **Videos 7, 8, 9, 11, 12**: True positives (should detect animals)
+- **Videos 1-6**: False positives (should NOT detect animals)  
+- **Videos 13-19**: Camera handling (should NOT detect animals)
+
+#### 3. Results Table Structure
+Create tables with these columns:
+- **Strategy/Model**: Processing approach and MegaDetector variant
+- **Animals Detected**: List video numbers where animals were found
+- **No Animals**: List video numbers where no animals were found  
+- **Not Processed**: List videos not processed (with reason)
+- **True Positives**: Count and percentage of correct animal detections
+- **False Positives**: Count and percentage of incorrect animal detections
+- **Precision**: TP / (TP + FP) - accuracy of positive predictions
+- **Recall**: TP / (TP + True Negatives attempted) - coverage of actual positives
+
+#### 4. Analysis Steps
+1. **Extract Processing Results**: Parse logs for video-by-video outcomes
+2. **Calculate Metrics**: Compute precision, recall, F1-score for each strategy
+3. **Identify Patterns**: Look for systematic failures or advantages
+4. **Processing Time Analysis**: Calculate total duration and per-video averages
+5. **Technical Issues**: Document errors, incomplete runs, or reliability problems
+
+#### 5. Critical Validation Points
+- **Verify ground truth assumptions** - ensure test videos match expected categories
+- **Distinguish technical failures from detection results** - processing errors vs detection outcomes
+- **Account for incomplete experiments** - logs may be truncated or interrupted
+- **Consider conservative behavior beneficial** - skipping videos may indicate good filtering
+
+#### 6. Recommendations Format
+Based on results, provide:
+- **Best performing strategy** with specific parameters
+- **Identified issues** requiring fixes or improvements  
+- **Next experimental parameters** to test variations
+- **Processing time vs accuracy trade-offs** for production decisions
+
+This methodology ensures consistent, accurate analysis of experimental results for strategy optimization.
