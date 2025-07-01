@@ -593,7 +593,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     crop_area = crop_width * crop_height
                     
                     # Run crop-only ensemble (YOLO + MegaDetector YOLO variants, NO RT-DETR)
-                    crop_detections = self._run_crop_ensemble(crop, timestamp, frame_idx)
+                    crop_detections = self._run_crop_ensemble(crop, timestamp, frame_idx, motion_region=region)
                     
                     for det in crop_detections:
                         # Transform coordinates back to full frame
@@ -686,7 +686,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         step = len(frame_indices) / max_samples
         return [int(i * step) for i in range(max_samples)]
     
-    def _run_crop_ensemble(self, crop: np.ndarray, timestamp: float, frame_idx: int) -> List[Dict]:
+    def _run_crop_ensemble(self, crop: np.ndarray, timestamp: float, frame_idx: int, motion_region: tuple = None) -> List[Dict]:
         """Run crop-only ensemble models (YOLO + MegaDetector YOLO variants, NO RT-DETR)."""
         all_detections = []
         
@@ -695,7 +695,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 if (model_name.startswith('yolov8') or model_name.startswith('yolov10') or 
                     model_name.startswith('yolo12')):
                     # Run YOLO model directly
-                    detections = self._run_yolo_on_crop(crop, model_name, timestamp, frame_idx)
+                    detections = self._run_yolo_on_crop(crop, model_name, timestamp, frame_idx, motion_region)
                 elif model_name.startswith('MDV6-') and 'yolov' in model_name.lower():
                     # Run MegaDetector YOLO variant on crop
                     detections = self._run_megadetector_yolo_on_crop(crop, model_name, timestamp, frame_idx)
@@ -711,7 +711,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         return all_detections
     
-    def _run_yolo_on_crop(self, crop: np.ndarray, model_name: str, timestamp: float, frame_idx: int) -> List[Dict]:
+    def _run_yolo_on_crop(self, crop: np.ndarray, model_name: str, timestamp: float, frame_idx: int, motion_region: tuple = None) -> List[Dict]:
         """Run YOLO model on crop using unified registry."""
         # Use unified YOLO detector registry
         detector = self.ml_ensemble.yolo_detectors.get(model_name)
@@ -744,7 +744,11 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     analysis_logger.info(f"🔲 {timestamp:.1f}s | {xyxy[0]:.0f},{xyxy[1]:.0f},{xyxy[2]:.0f},{xyxy[3]:.0f} | {model_name} | CROP_DETECT | conf={conf:.3f}")
         
         # Log summary for this model - motion bbox and final count
-        analysis_logger.info(f"🔲 {timestamp:.1f}s | {motion_bbox[0]:.0f},{motion_bbox[1]:.0f},{motion_bbox[2]:.0f},{motion_bbox[3]:.0f} | {model_name} | CROP_RESULT | {len(detections)} detections")
+        if motion_region:
+            motion_bbox = motion_region
+            analysis_logger.info(f"🔲 {timestamp:.1f}s | {motion_bbox[0]:.0f},{motion_bbox[1]:.0f},{motion_bbox[2]:.0f},{motion_bbox[3]:.0f} | {model_name} | CROP_RESULT | {len(detections)} detections")
+        else:
+            analysis_logger.info(f"🔲 {timestamp:.1f}s | {model_name} | CROP_RESULT | {len(detections)} detections")
         
         return detections
     
@@ -1257,6 +1261,22 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # STEP 4: Full-frame validation on N frames per scored track
         analysis_logger.info(f"🎯 [STEP 4/4] {video_path.name}: Full-frame validation")
         final_validated_sequences = self.run_full_frame_validation_on_scored_crops(video_path, scored_tracks)
+        
+        # Integrate RT-DETR contributions from Step 4 into model tracking system
+        for validation_result in final_validated_sequences:
+            rtdetr_contributions = validation_result.get('rtdetr_contributions', {})
+            if rtdetr_contributions:
+                # Find the corresponding track in scored_tracks and add RT-DETR contributions
+                track_id = validation_result['track_id']
+                for track in scored_tracks:
+                    if track['track_id'] == track_id:
+                        # Merge RT-DETR contributions into the track's model_contributions
+                        if 'model_contributions' not in track:
+                            track['model_contributions'] = {}
+                        
+                        for rtdetr_model, rtdetr_stats in rtdetr_contributions.items():
+                            track['model_contributions'][rtdetr_model] = rtdetr_stats
+                        break
         
         if not final_validated_sequences:
             analysis_logger.warning(f"❌ [STEP 4/4] No tracks passed validation")
