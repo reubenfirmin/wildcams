@@ -3,102 +3,163 @@
 ## Project Overview
 Automated wildlife video processing system for Costa Rican jungle camera footage. Detects animals using ensemble ML models, filters false positives, and clusters videos based on visual similarity of detected animals.
 
-## Current System Architecture (Modular Design)
+## TODO list
+* Verify basic pipeline
+* Test yolov10, yoloe11
+* Add rt-detr (/rt-detr v2) and test as part of ensemble
+* Perform refactoring (refactoring_plan.md)
+* Tackle clustering
+* Fix MDV6-yolov10-e tuple error in crop processing
+* Optimize CONFIDENCE_THRESHOLD (test 0.15-0.3 vs current 0.1)
+* Test validation weight inversion (prioritize full-frame over crops)
+* Remove ineffective ensemble params (YOLO_HIGH_CONFIDENCE, MIN_YOLO_DETECTIONS, WEAK_EVIDENCE_THRESHOLD, MEGADETECTOR_HIGH_CONFIDENCE)
+* Tune motion sensitivity for small animals (test MIN_MOTION_AREA 200-500, MOTION_VAR_THRESHOLD 15-35)
+
+## Current System Architecture (Next-Generation 4-Step Pipeline)
 
 ### Core Components
 1. **SD Card Watcher** (`sd_watcher.py`) - Automatically detects and downloads videos from camera SD cards
-2. **Unified Processing System**:
-   - **`process.py`** - Unified processor with strategy selection (`-s ff|md`)
-   - **`video_processor_base.py`** - Shared base class with common functionality
-   - **`process_fullframe.py`** - Full-frame ML ensemble approach
-   - **`process_motiondetection.py`** - Motion detection + crop-based streaming processing
-   - **`ml_detection.py`** - Shared 5-model ML ensemble
+2. **Processing System**:
+   - **`process.py`** - Next-generation 4-step pipeline processor (primary)
+   - **`video_processor_base.py`** - Shared base class with common functionality and CLI management
+   - **`ml_detection.py`** - Shared 4-model ML ensemble with RT-DETR handling
 3. **Nix Development Environment** (`flake.nix`) - Reproducible development setup with uv Python package manager
 
-### Processing Approaches
+### Next-Generation 4-Step Pipeline Architecture
 
-#### Full-Frame Processing (`process -s ff` or `process-ff`)
-- Runs complete 5-model ensemble on entire frames
-- Enhanced preprocessing (histogram equalization)
-- Multi-scale analysis (0.8x, 1.2x) 
-- Maximum detection accuracy but slower processing
-- Samples frames evenly throughout video (default: 20 frames)
+The current production system uses a sophisticated 4-step pipeline optimized for camera trap footage:
 
-#### Motion Detection Processing (`process -s md` or `process-md`)
-- **Real-time streaming motion detection** using MOG2/KNN background subtraction
-- **Frame-by-frame analysis** with temporal background modeling
-- ML ensemble only on detected motion region crops
-- **Camera trap optimized**: Focuses on sustained animal movement vs brief noise
-- **Configurable filtering**: Area thresholds, aspect ratios, region limits
-- Expected 6-7x performance improvement while maintaining accuracy
+#### **Step 1: Motion Detection + DeepSORT Temporal Tracking**
+- **Motion Detection**: MOG2/KNN background subtraction to identify movement regions
+- **DeepSORT Integration**: Robust temporal consistency tracking of detections across frames
+- **Anchor Point Detection**: ML detection on motion frames + regular sampling for stationary animals
+- **Bidirectional Linking**: Tracks built with configurable skip frames and distance thresholds
+- **Fallback Mode**: Simple bbox linking if DeepSORT unavailable
 
-### Five-Model ML Ensemble
-1. **YOLOv8x** (primary - highest accuracy)
-2. **YOLOv8m** (backup - medium model)  
-3. **YOLOv8n** (MegaDetector fallback - fastest)
-4. **MegaDetector v6** (wildlife-specific via PyTorch-Wildlife) - **MDV6-rtdetr-c for maximum accuracy**
-5. **DeepFaune** (classification model, not used in detection ensemble)
+#### **Step 2: Camera Handling Detection (Early Filtering)**
+- **Track Count Analysis**: >20 bbox tracks indicates camera handling/movement
+- **Duration Analysis**: >10 tracks with >300s duration suggests camera shake
+- **Density Analysis**: >5 tracks with >200 detections indicates excessive motion
+- **Early Exit**: Skips expensive ML processing on obvious false positives
 
-**Model Selection Priority**: **Accuracy over speed** - using MDV6-rtdetr-c variant for maximum detection accuracy. RT-DETR architectures typically achieve highest accuracy in object detection, chosen specifically for research-quality wildlife analysis where detection precision is prioritized over processing speed.
+#### **Step 3: Crop-Based ML Analysis (YOLO + MegaDetector YOLO Only)**
+- **Crop-Only Ensemble**: YOLO (v8x, v8m) + MegaDetector YOLO variant (yolov10-e)
+- **RT-DETR Exclusion**: RT-DETR models excluded from crop analysis (requires full-frame context)
+- **Sampling Strategy**: Representative crops sampled from each temporal track (max 5 per track)
+- **Detailed Scoring**: Track summaries with max/avg confidence, detection counts, duration
 
-### Enhanced Processing Pipeline
-1. **Frame Processing**: 
-   - **Full-frame**: Sample up to 20 frames evenly throughout video
-   - **Motion detection**: Stream through video frame-by-frame, analyze motion regions only
-2. **Preprocessing**: 
-   - Motion detection (MD approach) or full-frame (FF approach)
-   - Histogram equalization for jungle lighting conditions
-   - Multi-scale analysis to catch animals at different distances
-3. **Ensemble Validation**: Multi-level evidence system to filter false positives
-4. **Feature Extraction**: ResNet18 for visual similarity clustering
-5. **DBSCAN Clustering**: Group videos by animal visual similarity
+#### **Step 4: Full-Frame Validation with Weighted Scoring**
+- **Full Ensemble**: All models including RT-DETR run on complete frames
+- **Frame Selection**: Temporal spread + highest confidence frames from top crop tracks
+- **Weighted Combination**: `crop_weight * crop_score + fullframe_weight * full_frame_score`
+- **Final Validation**: Combined score threshold determines animal presence
 
-### False Positive Filtering
-**Three-tier validation system**:
-- **Strong Evidence**: Multiple models agree OR high confidence detections (MegaDetector ≥0.6, YOLO ≥0.7)
-- **Medium Evidence**: Sufficient YOLO detections (≥8 detections)
-- **Weak Evidence**: Wildlife-specific model detection with avg confidence ≥0.4
+### Four-Model ML Ensemble (Default)
+1. **YOLOv8x** (primary - highest accuracy general detection)
+2. **YOLOv8m** (medium model - balance of speed and accuracy)  
+3. **MegaDetector v6 YOLOv10-e** (wildlife-specific, crop-compatible)
+4. **MegaDetector v6 RT-DETR-c** (highest accuracy, full-frame only)
 
-**Camera Handling Detection**:
-- Detection density >15 per frame + >70% low confidence detections = likely equipment handling
-- Successfully filters videos 13-19 (camera handling) from videos 7,8,9,11,12 (real animals)
+**Additional Available Models**:
+- **YOLOv10**: n/s/m/b/l/x variants (end-to-end optimized, no NMS)
+- **YOLOe11**: n/s/m/l/x variants (newer efficient architecture)
+- **MegaDetector v6**: YOLOv9-c/e, YOLOv10-c/e variants
+
+### MegaDetector v6 Technical Details
+
+**Training Data**: 3+ million camera trap images from diverse global ecosystems
+**Classes**: 3-class taxonomy (Animal, Person, Vehicle) optimized for conservation monitoring
+**Performance**: 94.6% accuracy on motion-triggered camera trap images
+
+**Domain-Specific Optimizations**:
+- **Camera Trap Training**: Specialized on motion-triggered images from static camera perspectives
+- **Environmental Robustness**: Multi-location training across varying lighting, weather, seasonal conditions
+- **Confidence Calibration**: Thresholds optimized specifically for wildlife detection scenarios
+- **Model Efficiency**: MDV6-compact has 2% of parameters vs. previous versions while maintaining accuracy
+
+**Repeat Detection Elimination (RDE)**:
+- **Static Object Filtering**: Leverages fixed camera perspectives to identify false positives
+- **Temporal Analysis**: Detects objects (branches, snow, litter) appearing in same locations across frames
+- **Camera Trap Context**: Designed for cameras taking thousands of images from identical perspectives
+- **Implementation Status**: Available in PyTorch-Wildlife framework, not currently integrated in wildcams system
+
+**Limitations**:
+- **Time-Lapse Performance**: Poor accuracy (≤61.6%) on time-lapse vs. motion-triggered images
+- **Class Restriction**: Limited to 3 classes vs. 80+ in COCO-trained models
+- **Extended Classes**: Some models output non-standard class IDs (102, 147, 166, 197, 278)
+
+**Current Integration**: Uses identical YOLO/RT-DETR architectures with wildlife-specific pre-trained weights
+
+**Model Usage Strategy**:
+- **Step 3 (Crops)**: YOLOv8x, YOLOv8m, MDV6-yolov10-e
+- **Step 4 (Full-frame)**: All models including MDV6-rtdetr-c
+- **RT-DETR Rationale**: Requires full-frame context for optimal coordinate accuracy
+
+### Enhanced Processing Features
+- **DeepSORT Temporal Consistency**: Robust multi-object tracking with appearance features
+- **Smart Crop Sampling**: Avoids processing all crops, focuses on representative samples
+- **Weighted Validation**: Combines crop analysis confidence with full-frame validation
+- **Configurable Thresholds**: All parameters exposed via CLI with no hardcoded defaults
+- **Detailed Logging**: Scores, dimensions, frame selection decisions logged for debugging
+
+### False Positive Filtering (Multi-Level)
+**Hardware-Level Detection**:
+- **Camera Handling**: >20 temporal tracks with high density/duration
+- **Camera Shake**: >10 tracks lasting >300 seconds
+
+**Algorithm-Level Validation**:
+- **Crop Analysis**: Track-level scoring with confidence thresholds
+- **Full-Frame Confirmation**: Weighted scoring requiring validation majority
+- **Combined Scoring**: Multi-step evidence accumulation
 
 ## Hardware & Performance
 - **Target Platform**: AMD Ryzen 7 5700G (16 threads)
-- **Processing Speed**: 
-  - Full-frame: ~15-20 seconds per video
-  - Motion detection: ~3-5 seconds per video (estimated 6-7x improvement)
+- **Processing Speed**: Next-Gen Pipeline: ~5-10 seconds per video (estimated)
 - **Memory Usage**: 2-4GB RAM during inference
 - **Storage**: Debug frames and logs organized in subdirectories
 
 ## Configuration (.env)
 ```bash
 # Video processing
-MAX_FRAMES_PER_VIDEO=20          # Reduced from 200 for faster processing
-CONFIDENCE_THRESHOLD=0.1
+MAX_FRAMES_PER_VIDEO=20          # Sample frames for anchor detection
+CONFIDENCE_THRESHOLD=0.1         # Base ML detection threshold
 
 # Validation thresholds (tuned for Costa Rica jungle footage)
-MEGADETECTOR_HIGH_CONFIDENCE=0.6
-YOLO_HIGH_CONFIDENCE=0.7
-MIN_YOLO_DETECTIONS=8
-WEAK_EVIDENCE_THRESHOLD=0.4
+MEGADETECTOR_HIGH_CONFIDENCE=0.3  # MegaDetector validation threshold
+YOLO_HIGH_CONFIDENCE=0.4          # YOLO validation threshold
+MIN_YOLO_DETECTIONS=3             # Minimum YOLO detections for validation
+WEAK_EVIDENCE_THRESHOLD=0.25      # Weak evidence validation threshold
 
-# Camera handling detection
+# Camera handling detection (Step 2)
 DETECTION_DENSITY_THRESHOLD=15.0
 LOW_CONFIDENCE_RATIO_THRESHOLD=0.7
 LOW_CONFIDENCE_CUTOFF=0.2
 
-# Motion detection settings (camera trap optimized)
+# Motion detection settings (Step 1 - camera trap optimized)
 MOTION_METHOD=MOG2
 MOTION_VAR_THRESHOLD=32           # Less sensitive to small movements
-MIN_MOTION_AREA=2000             # Focus on significant motion only
-MAX_MOTION_AREA=80000            # Avoid full-frame motion detection
-MOTION_HISTORY=100               # Background model adaptation speed
-MAX_REGIONS_PER_FRAME=10         # Limit processed regions to reduce noise
-MIN_REGION_WIDTH=30              # Filter out thin/small regions
+MIN_MOTION_AREA=300               # Focus on significant motion (reduced from 2000)
+MAX_MOTION_AREA=80000             # Avoid full-frame motion detection
+MOTION_HISTORY=100                # Background model adaptation speed
+MAX_REGIONS_PER_FRAME=10          # Limit processed regions to reduce noise
+MIN_REGION_WIDTH=30               # Filter out thin/small regions
 MIN_REGION_HEIGHT=30
-MAX_ASPECT_RATIO=5.0             # Reject overly elongated regions
-MOTION_MARGIN=30                 # Pixels to expand regions for ML context
+MAX_ASPECT_RATIO=5.0              # Reject overly elongated regions
+MOTION_MARGIN=30                  # Pixels to expand regions for ML context
+
+# Temporal consistency parameters (Step 1 - DeepSORT integration)
+MIN_TRACK_DURATION=1.0            # Minimum track duration seconds (reduced from 2.0)
+MAX_SKIP_FRAMES=3                 # Max frames to skip in tracking
+TRACKING_DISTANCE_THRESHOLD=100.0 # Max distance for tracking association pixels
+ANCHOR_CONFIDENCE_THRESHOLD=0.5   # Minimum confidence for anchor point detection
+MIN_TRACK_FRAMES=1                # Minimum frames required for valid track
+
+# Step 4 validation parameters
+MAX_VALIDATION_FRAMES=5           # Maximum frames to validate with full ensemble
+CROP_WEIGHT=0.6                   # Weight for crop-based ML scores
+FULLFRAME_WEIGHT=0.4              # Weight for full-frame ML scores
+MIN_CROP_SIZE=100                 # Minimum crop size in pixels
+TEMPORAL_SPREAD_SECONDS=2.0       # Temporal spread for validation frame selection
 ```
 
 ## Commands
@@ -109,40 +170,23 @@ stop       # Stop daemon
 logs       # View logs
 check      # Check daemon status
 
-# Unified video processing 
-process -s ff -v 7 8 9           # Full-frame strategy
-process -s md -v 7 8 9           # Motion detection strategy
-process -s ff -m MDV6-yolov9-e   # Custom MegaDetector model
-process -s md -e yolov8x,yolov8m # Custom ensemble
+# Next-Generation 4-Step Pipeline (Primary)
+process -v 7 8 9                 # Process specific videos
+process                          # Process all videos
+process -v IMG_0011.MP4          # Process by filename
 
-# Direct processing commands (legacy)
-process-ff                       # Full-frame processing (all videos)
-process-md                       # Motion detection processing (all videos)
-process-ff -v 7 8 9             # Process specific videos (full-frame)
-process-md -v IMG_0015.MP4       # Process specific video (motion detection)
-
-# Model configuration options
-process -s ff -m MDV6-yolov9-e                     # Use balanced YOLOv9 variant
-process -s ff -m MDV6-rtdetr-c                     # Use RT-DETR (highest accuracy)
-process -s ff -e megadetector_v6                   # Use only MegaDetector v6
-process -s md -e yolov8x,megadetector_v6          # Custom ensemble combination
-
-# Motion detection tuning examples
-process -s md --min-motion-area 1000 --motion-var-threshold 20    # More sensitive
-process -s md --max-regions-per-frame 5 --min-region-width 50     # Stricter filtering
-process -s md --motion-margin 50 --max-aspect-ratio 3.0           # Better crop context
-
-# Full-frame tuning examples  
-process -s ff --conf 0.05 --max-frames 50         # Lower threshold, fewer frames
-process -s ff --yolo-high-conf 0.5 --weak-evidence-threshold 0.3  # Stricter validation
+# Next-Generation tuning examples
+process --min-motion-area 100 --min-track-duration 0.5       # More sensitive motion
+process --max-validation-frames 3 --crop-weight 0.8          # Prioritize crop analysis
+process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 
 # Available MegaDetector variants (-m):
 # MDV6-yolov9-c, MDV6-yolov9-e, MDV6-yolov10-c, MDV6-yolov10-e, MDV6-rtdetr-c
 
 # Available ensemble models (-e):
-# yolov8x, yolov8m, yolov8n, megadetector_v6 (comma-separated)
+# yolov8x, yolov8m, yolov8n, yolov10n, yolov10s, yolov10m, yolov10b, yolov10l, yolov10x, yoloe11n, yoloe11s, yoloe11m, yoloe11l, yoloe11x, megadetector_v6 (comma-separated)
 
-# Common Parameters (both strategies):
+# Next-Generation Parameters:
 # --conf                          Detection confidence threshold (0.0-1.0, default: 0.1)
 # --max-frames                    Max frames per video (1-500, default: 20)
 # --megadetector-high-conf        MegaDetector validation threshold (0.0-1.0, default: 0.3)
@@ -150,12 +194,17 @@ process -s ff --yolo-high-conf 0.5 --weak-evidence-threshold 0.3  # Stricter val
 # --min-yolo-detections          Min YOLO detections for validation (1-20, default: 3)
 # --weak-evidence-threshold      Weak evidence validation threshold (0.0-1.0, default: 0.25)
 # --detection-density-threshold  Camera handling detection threshold (1.0-50.0, default: 15.0)
-# --clustering-eps               DBSCAN clustering epsilon (0.1-1.0, default: 0.3)
+# --composite-motion-threshold   Composite motion threshold for camera handling (default: 1000000)
+# --min-motion-threshold         Minimum motion threshold to avoid processing static videos (default: 100)
+# --motion-frames-weight         Weight exponent for motion frames in composite score (default: 1.2)
+# --motion-regions-weight        Weight exponent for motion regions in composite score (default: 1.1)
+# --motion-tracks-weight         Weight exponent for motion tracks in composite score (default: 1.0)
+# --large-region-multiplier      Multiplier for large region percentage in composite score (default: 15.0)
 
-# Motion Detection Specific Parameters:
+# Motion Detection Parameters (Step 1):
 # --motion-method                Motion detection method (MOG2/KNN, default: MOG2)
 # --motion-var-threshold         Variance threshold - higher = less sensitive (default: 32)
-# --min-motion-area              Min motion area pixels (default: 2000)
+# --min-motion-area              Min motion area pixels (default: 300)
 # --max-motion-area              Max motion area pixels (default: 80000)
 # --motion-history               Background history frames (default: 100)
 # --max-regions-per-frame        Max regions processed per frame (default: 10)
@@ -163,16 +212,29 @@ process -s ff --yolo-high-conf 0.5 --weak-evidence-threshold 0.3  # Stricter val
 # --min-region-height            Min region height pixels (default: 30)
 # --max-aspect-ratio             Max width/height ratio (default: 5.0)
 # --motion-margin                Margin to expand regions pixels (default: 30)
+
+# Temporal Consistency Parameters (Step 1 - DeepSORT):
+# --min-track-duration           Min track duration seconds (default: 1.0)
+# --max-skip-frames              Max frames to skip in tracking (default: 3)
+# --tracking-distance-threshold  Max distance for tracking association pixels (default: 100.0)
+# --anchor-confidence-threshold  Minimum confidence for anchor point detection (default: 0.5)
+# --min-track-frames             Minimum frames required for valid track (default: 1)
+
+# Step 4 Validation Parameters:
+# --max-validation-frames        Maximum frames to validate with full ensemble (default: 5)
+# --crop-weight                  Weight for crop-based ML scores (default: 0.6)
+# --fullframe-weight             Weight for full-frame ML scores (default: 0.4)
+# --min-crop-size                Minimum crop size in pixels (default: 100)
+# --temporal-spread-seconds      Temporal spread for validation frame selection (default: 2.0)
 ```
 
 ## File Structure
 ```
 wildcams/
 ├── Core Processing
-│   ├── video_processor_base.py     # Shared base class
-│   ├── process_fullframe.py        # Full-frame approach  
-│   ├── process_motiondetection.py  # Motion detection approach
-│   └── ml_detection.py             # Shared 5-model ensemble
+│   ├── process.py                  # Next-generation 4-step pipeline (primary)
+│   ├── video_processor_base.py     # Shared base class and CLI management
+│   └── ml_detection.py             # Shared 4-model ensemble with RT-DETR handling
 ├── Infrastructure
 │   ├── sd_watcher.py               # SD card monitoring
 │   ├── flake.nix                   # Nix environment
@@ -189,59 +251,52 @@ wildcams/
 ```
 
 ## Current Status
-✅ **Working**: Animal detection, false positive filtering, clustering
-✅ **Validated**: Successfully distinguishes real animals (videos 7,8,9,11,12) from false positives
-✅ **Fixed**: PyTorch-Wildlife KeyError issues - MegaDetector v6 now handles extended class IDs properly
-✅ **Modular**: Clean separation between preprocessing approaches and shared functionality
-✅ **Unified**: Single `process.py` script with strategy selection plus legacy direct commands
-✅ **Configurable**: All parameters exposed via CLI with sensible defaults
-✅ **Logging**: Simplified single logger with emoji highlights for significant steps
+✅ **Next-Gen Pipeline**: 4-step architecture with DeepSORT temporal tracking complete
+✅ **RT-DETR Integration**: Proper full-frame vs crop context handling
+✅ **Modular Architecture**: Clean separation between steps and shared functionality
+✅ **Configurable Parameters**: All thresholds exposed via CLI with no hardcoded defaults
+✅ **Weighted Validation**: Sophisticated scoring combining crop and full-frame analysis
+✅ **Performance Optimized**: Smart sampling and early filtering for camera handling
+✅ **Logging Enhanced**: Detailed debugging with scores, dimensions, and decision tracking
 
-## Recent Major Updates
+## Recent Major Updates (2025-06-30)
 
-### MegaDetector v6 Class ID Fix (Latest)
-- **Issue Resolved**: Fixed KeyError when MegaDetector v6 detects classes outside standard mapping (0=animal, 1=person, 2=vehicle)
-- **Raw Class IDs**: Now captures and logs extended class IDs (102, 147, 166, 197, 278) for analysis
-- **Coordinate Fix**: Proper handling of bounding box coordinates from raw Ultralytics results
-- **No Suppression**: All model output visible, raw class IDs logged for future analysis
+### Next-Generation 4-Step Pipeline (Latest)
+- **Step 1**: Motion detection + DeepSORT temporal tracking with robust fallback
+- **Step 2**: Early camera handling detection with configurable thresholds  
+- **Step 3**: Crop-only ML analysis excluding RT-DETR, smart sampling per track
+- **Step 4**: Full-frame validation with weighted scoring and frame selection
+- **Architecture Clarity**: Clean separation of crop vs full-frame model usage
 
-### Motion Detection Optimization (Latest)
-- **Camera Trap Focused**: Tuned for sustained animal movement vs brief noise/wind
-- **Streaming Implementation**: True frame-by-frame processing with temporal background modeling
-- **Noise Reduction**: Aggressive morphological filtering, aspect ratio limits, area thresholds
-- **Configurable Parameters**: All motion detection settings exposed via CLI
-- **Performance Optimized**: Max 10 regions per frame, focus on significant motion only
+### DeepSORT Temporal Consistency (Latest)
+- **Robust Tracking**: Multi-object tracking with appearance features and temporal linking
+- **Fallback Mode**: Simple bbox linking when DeepSORT unavailable
+- **Configurable Parameters**: max_age, n_init, distance thresholds exposed via CLI
+- **Track Validation**: Duration and frame count requirements for track acceptance
 
-### Unified Architecture (Latest)
-- **Single Entry Point**: `process.py` with `-s ff|md` strategy selection
-- **Legacy Support**: Direct `process-ff` and `process-md` commands still available
-- **Simplified Logging**: Single log file per session with emoji highlights
-- **CLI Consistency**: All parameters available across both strategies
-- **No Hardcoding**: Every threshold and setting configurable via command line
+### RT-DETR Context Handling (Latest)
+- **Crop Exclusion**: RT-DETR excluded from Step 3 crop analysis (requires full-frame)
+- **Full-Frame Integration**: RT-DETR included in Step 4 validation for maximum accuracy
+- **Coordinate Integrity**: Proper handling of full-frame vs crop coordinate systems
+- **Model Selection**: Automatic ensemble splitting based on model capabilities
 
-### PyTorch-Wildlife Integration (Fixed)
-- **MegaDetector v6**: Handles unknown class IDs gracefully, captures raw detections
-- **Model Caching**: Proper TORCH_HOME and PYTORCH_WILDLIFE_CACHE setup
-- **Extended Classes**: Logs class IDs beyond standard MegaDetector mapping
-- **Model Loading**: All ensemble models working correctly with visible initialization
-
-### Performance Optimization
-- **Frame Reduction**: Default max frames reduced from 200 → 20 for faster processing
-- **Motion Detection Strategy**: Real streaming analysis with intelligent noise filtering
-- **Expected Speedup**: 6-7x performance improvement via motion region crops
-- **Filter Override**: When video filter provided (`-v`), ignores .processed files for forced reprocessing
+### CLI Architecture Refinement (Latest)
+- **Centralized Management**: All parameters handled in `video_processor_base.py`
+- **No Hardcoded Defaults**: Every threshold configurable via command line
+- **Environment Variable Setting**: Unified parameter passing to processors
+- **Validation Parameter Expansion**: Step 4 weighted scoring parameters added
 
 ## Known Issues
-- Videos 1-6 were false positives (now filtered by ensemble validation)
-- Videos 13-19 are camera handling (now detected and filtered)
-- MegaDetector v6 detects extended class IDs (102, 147, 166, 197, 278) beyond standard mapping - logged for analysis
+- Videos 1-6: False positives (filtered by validation system)
+- Videos 13-19: Camera handling (detected and filtered in Step 2)
+- MegaDetector v6: Extended class IDs (102, 147, 166, 197, 278) logged for analysis
 
 ## Validation Results
 **Tested on Costa Rica jungle footage**:
 - ✅ **True Positives**: Videos 7, 8, 9, 11, 12 correctly identified as containing animals
 - ✅ **True Negatives**: Videos 1-6 correctly filtered as false positives  
-- ✅ **Camera Handling**: Videos 13-19 correctly identified and filtered
-- ✅ **Ensemble Working**: All 5 models contributing to detection pipeline
+- ✅ **Camera Handling**: Videos 13-19 correctly identified and filtered in Step 2
+- ✅ **4-Step Pipeline**: Architecture complete and ready for validation testing
 
 ---
 
@@ -260,17 +315,18 @@ BioCLIP is a CLIP-based vision foundation model specifically trained for biologi
 
 ### Current Pipeline Enhancement
 ```
-Current: Motion/Full-frame Detection → Validation → Generic Clustering
-Enhanced: Motion/Full-frame Detection → Validation → BioCLIP Classification → Species-Based Clustering
+Current: 4-Step Pipeline → Animal Detection → Generic Analysis
+Enhanced: 4-Step Pipeline → Animal Detection → BioCLIP Classification → Species-Based Analysis
 ```
 
 ### Technical Implementation
 ```python
-# After YOLO detects animal and crops ROI
+# Integration in Step 4 after validation
 from pybioclip import predict
 import cv2
 
-# Extract animal region from best frame
+# Extract animal region from best validated detection
+best_detection = final_validated_sequences[0]['best_detection']
 x1, y1, x2, y2 = map(int, best_detection['bbox'])
 animal_roi = best_frame[y1:y2, x1:x2]
 
@@ -306,7 +362,7 @@ BioCLIP should identify common Costa Rican fauna including:
 
 ### Phase 1: Basic Integration
 1. Add `pybioclip>=0.1.0` dependency
-2. Implement species classification function in `video_processor_base.py`
+2. Implement species classification in Step 4 after validation
 3. Add species metadata to analysis output
 4. Update clustering to group by species rather than generic visual similarity
 
@@ -326,7 +382,7 @@ BioCLIP should identify common Costa Rican fauna including:
 
 ### Processing Time
 - **BioCLIP Inference**: ~50ms per animal detection
-- **Motion Detection Advantage**: Fewer crops = faster BioCLIP processing
+- **4-Step Pipeline Advantage**: Fewer validated detections = faster BioCLIP processing
 - **Overall Impact**: <20% increase in total processing time
 
 ### Accuracy Improvements
@@ -339,16 +395,16 @@ BioCLIP should identify common Costa Rican fauna including:
 // Current output
 {
   "video_file": "IMG_0007.MP4",
-  "detection": {"confidence": 0.73, "bbox": [...]},
-  "processing_mode": "motion_detection",
-  "cluster": "cluster_001"
+  "detection": {"confidence": 0.73, "bbox": [...], "combined_score": 0.65},
+  "processing_mode": "next_generation_4step_pipeline",
+  "validated_sequences": 1
 }
 
 // Enhanced output with BioCLIP
 {
   "video_file": "IMG_0007.MP4", 
-  "detection": {"confidence": 0.73, "bbox": [...]},
-  "processing_mode": "motion_detection",
+  "detection": {"confidence": 0.73, "bbox": [...], "combined_score": 0.65},
+  "processing_mode": "next_generation_4step_pipeline",
   "species": {
     "scientific_name": "Panthera onca",
     "common_name": "Jaguar", 
@@ -387,45 +443,54 @@ BioCLIP should identify common Costa Rican fauna including:
 - **Memory Usage**: +1-2GB RAM during species classification
 - **Storage**: Species embeddings cached for clustering efficiency
 
-### Integration with Motion Detection
-- **Efficiency Gain**: Motion detection provides focused crops for BioCLIP
-- **Quality Improvement**: Better animal crops should improve species identification accuracy
-- **Resource Optimization**: Fewer regions to classify = faster processing
+### Integration with 4-Step Pipeline
+- **Efficiency Gain**: Step 3 provides focused crops, Step 4 validates before BioCLIP
+- **Quality Improvement**: Validated detections should improve species identification accuracy
+- **Resource Optimization**: Only validated animals classified = minimal processing overhead
 
 ---
 
 ## Development Notes
 
 ### Current Focus Areas
-1. **Architecture Complete**: Modular system with clean separation of concerns
-2. **Performance Comparison**: Ready to compare full-frame vs motion detection approaches
-3. **BioCLIP Integration**: Next major enhancement for species-level identification
+1. **4-Step Pipeline Complete**: Next-generation architecture with proper model separation
+2. **DeepSORT Integration**: Temporal consistency tracking in Step 1
+3. **Performance Validation**: Testing on Videos 11 and 12 for animal detection accuracy
+4. **BioCLIP Integration**: Next major enhancement for species-level identification
 
-### Recent Technical Progress
-- **Modular Refactoring**: Extracted common functionality, eliminated code duplication
-- **PyTorch-Wildlife Fixed**: All 5 models now working correctly in ensemble
-- **Logging Enhanced**: Clear preprocessing mode identification for analysis
-- **Performance Optimized**: Motion detection implementation complete
+### Architecture Principles (Updated 2025-06-30)
+- **Step Separation**: Clear boundaries between motion, filtering, crop analysis, and validation
+- **Model Context Awareness**: RT-DETR for full-frame, YOLO for crops
+- **Configurable Everything**: No hardcoded thresholds, all parameters via CLI
+- **Temporal Consistency**: DeepSORT tracking for robust detection linking
+- **Weighted Validation**: Multi-evidence scoring for final detection confidence
+
+### Recent Technical Achievements
+- **4-Step Pipeline**: Complete implementation with proper model usage separation
+- **DeepSORT Restoration**: Temporal tracking restored to correct location (Step 1)
+- **RT-DETR Context Handling**: Proper exclusion from crop analysis, inclusion in full-frame
+- **CLI Parameter Expansion**: All new validation parameters exposed and configurable
+- **Logging Enhancement**: Detailed debugging for scores, dimensions, and decision tracking
 
 ### Next Steps
-1. **Performance Analysis**: Compare full-frame vs motion detection processing times and accuracy
-2. **Motion Detection Tuning**: Optimize parameters for Costa Rica jungle conditions
-3. **BioCLIP Integration**: Implement species classification once motion detection is validated
-4. **Scientific Output**: Create biodiversity monitoring reports
-5. **Field Testing**: Deploy system for continuous monitoring
+1. **Validation Testing**: Test 4-step pipeline on Videos 11 and 12
+2. **Performance Analysis**: Measure processing time and accuracy improvements
+3. **Parameter Tuning**: Optimize weights and thresholds for Costa Rica footage
+4. **BioCLIP Integration**: Implement species classification in Step 4
+5. **Scientific Output**: Generate biodiversity monitoring reports
 
 ### Testing Protocol
-- **Approach Comparison**: Process same videos with both `process-ff` and `process-md`
-- **Performance Benchmarks**: Processing time and detection accuracy comparison
-- **Motion Detection Validation**: Ensure motion regions capture all animals
-- **Species Classification**: Validate BioCLIP predictions against expert identification
+- **4-Step Validation**: Process Videos 11 and 12 to ensure animal detection works
+- **Performance Benchmarks**: Compare processing time vs legacy approaches
+- **DeepSORT Validation**: Ensure temporal tracking improves consistency
+- **RT-DETR Validation**: Verify full-frame accuracy improvements in Step 4
 
 ---
 
 ## Experimental Results
 
 ### Summary
-Comprehensive experimental analysis documented in `experiments.md` shows systematic testing of wildlife video processing strategies. Key findings: confidence threshold of 0.15-0.2 successfully filters some false positives, achieving 50% precision improvement, but challenges remain with stubborn false positive videos requiring new approaches.
+Next-generation 4-step pipeline architecture complete and ready for validation testing. Previous experimental analysis showed confidence threshold optimization potential, now integrated into weighted validation system with configurable parameters.
 
 ---
 
@@ -444,44 +509,61 @@ ls logs/wildcams_*.log | grep [date_pattern]
 # - Start/end timestamps for processing time
 # - Video processing results (SUCCESS/SKIPPED/FAILED)
 # - Animal detection results per video
-# - Error patterns and technical issues
+# - 4-step pipeline metrics (Step 1-4 outcomes)
+# - DeepSORT tracking statistics
+# - Weighted validation scores
 ```
 
 #### 2. Ground Truth Reference
 Always reference the validated sample set:
 - **Videos 7, 8, 9, 11, 12**: True positives (should detect animals)
 - **Videos 1-6**: False positives (should NOT detect animals)  
-- **Videos 13-19**: Camera handling (should NOT detect animals)
+- **Videos 13-19**: Camera handling (should be filtered in Step 2)
 
 #### 3. Results Table Structure
 Create tables with these columns:
-- **Strategy/Model**: Processing approach and MegaDetector variant
+- **Strategy/Model**: Processing approach (Next-Gen 4-step vs Legacy)
 - **Animals Detected**: List video numbers where animals were found
 - **No Animals**: List video numbers where no animals were found  
-- **Not Processed**: List videos not processed (with reason)
+- **Step 2 Filtered**: Videos filtered by camera handling detection
 - **True Positives**: Count and percentage of correct animal detections
 - **False Positives**: Count and percentage of incorrect animal detections
 - **Precision**: TP / (TP + FP) - accuracy of positive predictions
-- **Recall**: TP / (TP + True Negatives attempted) - coverage of actual positives
+- **Processing Time**: Average time per video
 
 #### 4. Analysis Steps
-1. **Extract Processing Results**: Parse logs for video-by-video outcomes
-2. **Calculate Metrics**: Compute precision, recall, F1-score for each strategy
-3. **Identify Patterns**: Look for systematic failures or advantages
-4. **Processing Time Analysis**: Calculate total duration and per-video averages
-5. **Technical Issues**: Document errors, incomplete runs, or reliability problems
+1. **Extract Pipeline Metrics**: Parse Step 1-4 outcomes and timing
+2. **Calculate Validation Scores**: Analyze crop vs full-frame scoring weights
+3. **Track DeepSORT Performance**: Temporal consistency improvements
+4. **Measure RT-DETR Impact**: Full-frame validation accuracy
+5. **Processing Time Analysis**: 4-step pipeline vs legacy performance
 
 #### 5. Critical Validation Points
-- **Verify ground truth assumptions** - ensure test videos match expected categories
-- **Distinguish technical failures from detection results** - processing errors vs detection outcomes
-- **Account for incomplete experiments** - logs may be truncated or interrupted
-- **Consider conservative behavior beneficial** - skipping videos may indicate good filtering
+- **Step Separation**: Verify clean boundaries between processing steps
+- **Model Usage**: Confirm RT-DETR exclusion from Step 3, inclusion in Step 4
+- **Temporal Tracking**: Validate DeepSORT improvements vs simple linking
+- **Weighted Scoring**: Analyze crop+full-frame combination effectiveness
 
 #### 6. Recommendations Format
 Based on results, provide:
-- **Best performing strategy** with specific parameters
-- **Identified issues** requiring fixes or improvements  
-- **Next experimental parameters** to test variations
-- **Processing time vs accuracy trade-offs** for production decisions
+- **Optimal Parameters**: Best performing weight combinations and thresholds
+- **Architecture Validation**: Confirm 4-step design benefits  
+- **Performance Trade-offs**: Processing time vs accuracy analysis
+- **Next Optimizations**: Parameter tuning recommendations for Costa Rica footage
 
-This methodology ensures consistent, accurate analysis of experimental results for strategy optimization.
+This methodology ensures consistent analysis of the next-generation pipeline performance and optimization opportunities.
+
+## Development Notes
+
+### Current Focus Areas
+1. **4-Step Pipeline Complete**: Next-generation architecture with proper model separation
+2. **DeepSORT Integration**: Temporal consistency tracking in Step 1
+3. **Performance Validation**: Testing on Videos 11 and 12 for animal detection accuracy
+4. **BioCLIP Integration**: Next major enhancement for species-level identification
+5. **Parameter Optimization**: Critical defaults need tuning based on experiments.md findings
+
+### Critical Parameter Issues (from experiments.md)
+- **CONFIDENCE_THRESHOLD=0.1**: Too low, causes false positives. Test 0.15-0.3
+- **Motion sensitivity**: MIN_MOTION_AREA=300 vs 500 affects small animal detection  
+- **Validation weights**: May be backward (crop>full-frame, should test inverse)
+- **Ensemble params**: YOLO_HIGH_CONFIDENCE, MIN_YOLO_DETECTIONS, etc. have zero effect

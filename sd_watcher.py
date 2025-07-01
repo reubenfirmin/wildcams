@@ -175,25 +175,21 @@ class SDCardWatcher:
 
     def check_for_duplicate_hash(self, file_hash: str, original_name: str) -> Tuple[bool, Optional[Path]]:
         """
-        Check if a hash already exists in ANY previous download.
+        Check if a hash already exists by calculating hashes of existing video files.
         Returns (is_duplicate, existing_file_path)
         """
-        # Search through all existing video directories for this hash
-        for existing_dir in self.video_dir.iterdir():
-            if not existing_dir.is_dir():
-                continue
-            
-            # Look for any .hash files that match our hash
-            for hash_file in existing_dir.glob('*.hash'):
+        # Search through all existing video files and calculate their hashes
+        for video_file in self.video_dir.rglob('*'):
+            if (video_file.is_file() and 
+                video_file.suffix.lower().lstrip('.') in self.video_extensions):
+                
                 try:
-                    with open(hash_file, 'r') as f:
-                        existing_hash = f.read().strip()
+                    existing_hash = self.calculate_file_hash(video_file)
                     if existing_hash == file_hash:
-                        # Found duplicate - return the video file path
-                        video_file = hash_file.with_suffix('')  # Remove .hash extension
+                        logger.info(f"Found duplicate: {video_file.name} matches hash")
                         return True, video_file
                 except Exception as e:
-                    logger.warning(f"Could not read hash file {hash_file}: {e}")
+                    logger.warning(f"Could not calculate hash for {video_file}: {e}")
         
         return False, None
 
@@ -231,14 +227,6 @@ class SDCardWatcher:
                 logger.error(f"Too many filename variations for {original_name}")
                 return dest_dir / f"{base_name}_ERROR_{counter}{extension}", False
 
-    def write_hash_file(self, video_path: Path, file_hash: str):
-        """Write hash to companion .hash file."""
-        hash_file_path = video_path.with_suffix(video_path.suffix + '.hash')
-        try:
-            with open(hash_file_path, 'w') as f:
-                f.write(file_hash)
-        except Exception as e:
-            logger.warning(f"Could not write hash file {hash_file_path}: {e}")
 
     def copy_videos(self, source_dir: Path, device_identifier: str) -> int:
         """Copy video files from source to destination with hash-based duplicate detection."""
@@ -278,9 +266,6 @@ class SDCardWatcher:
                 
                 logger.info(f"📋 Copied: {video_file.name}")
                 shutil.copy2(video_file, final_dest_file)
-                
-                # Write hash file
-                self.write_hash_file(final_dest_file, file_hash)
                 
                 copied_count += 1
                 

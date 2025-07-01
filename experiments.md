@@ -273,3 +273,118 @@ Identify 2-3 optimal parameter combinations for production use that provide the 
 - Better precision (temporal filtering beats full-frame's 50%)
 - Reasonable processing speed
 - Reliable processing across all video types
+
+---
+
+# YOLO GENERATION COMPARISON EXPERIMENT (2025-06-30)
+
+## Experiment Overview
+**Objective**: Compare performance of different YOLO model generations (v8, v10, v12) using the 4-step next-generation pipeline with unified ML ensemble architecture.
+
+**Testing Strategy**: Run identical processing pipeline with three different YOLO generation ensembles on all 20 videos to measure:
+1. **Detection accuracy** per YOLO generation
+2. **YOLO vs MegaDetector** model contributions  
+3. **Processing performance** and speed differences
+4. **Model-specific confidence patterns** and reliability
+
+## Test Configurations
+
+### Experiment A: YOLOv8 Generation Baseline
+```bash
+rm ~/Videos/wildcams/.tracking/*.processed && process --ensemble yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c
+```
+- **YOLO Models**: yolov8x (large), yolov8m (medium)
+- **MegaDetector**: MDV6-yolov10-e (crop analysis), MDV6-rtdetr-c (full-frame validation)
+- **Expected**: Strong baseline performance, established accuracy
+
+### Experiment B: YOLOv10 Generation Test  
+```bash
+rm ~/Videos/wildcams/.tracking/*.processed && process --ensemble yolov10x,yolov10m,MDV6-yolov10-e,MDV6-rtdetr-c
+```
+- **YOLO Models**: yolov10x (large), yolov10m (medium) 
+- **MegaDetector**: Same as baseline
+- **Expected**: Potential accuracy improvements, faster inference
+
+### Experiment C: YOLOv12 Generation Test
+```bash
+rm ~/Videos/wildcams/.tracking/*.processed && process --ensemble yolo12x,yolo12m,MDV6-yolov10-e,MDV6-rtdetr-c
+```
+- **YOLO Models**: yolo12x (large), yolo12m (medium)
+- **MegaDetector**: Same as baseline  
+- **Expected**: Latest generation improvements, unknown performance
+
+## 🔥 TOP PRIORITY FOR ANALYSIS
+
+### 1. **MODEL CONTRIBUTION COMPARISON** ⭐⭐⭐
+**CRITICAL**: Compare the new "🤖 MODEL CONTRIBUTION ANALYSIS" section across all three log files to determine:
+
+#### Per-Generation Performance:
+- **YOLOv8 vs YOLOv10 vs YOLOv12**: Which generation contributes most detections?
+- **Detection counts**: Total detections per model across all videos
+- **Confidence patterns**: Which generation produces higher confidence scores?
+- **Video coverage**: How many videos each generation contributes to
+
+#### YOLO vs MegaDetector Analysis:
+- **Relative contributions**: Do YOLO models outperform MegaDetector models?
+- **Complementary detection**: Which combinations work best together?
+- **Model-specific strengths**: Which models excel on specific video types?
+
+### 2. **PRECISION AND RECALL BY GENERATION** ⭐⭐⭐
+**CRITICAL**: Analyze final summary statistics to compare:
+- **Videos with animals detected**: Success rate per generation
+- **Processing failures**: Which generation has most robust processing?
+- **Strong crop failures**: Which generation has better crop→full-frame validation?
+
+### 3. **PERFORMANCE AND SPEED COMPARISON** ⭐⭐
+**IMPORTANT**: Compare processing efficiency:
+- **Total processing time**: Which generation is fastest?
+- **Memory usage patterns**: Any generation causing crashes/issues?
+- **Model loading time**: Which models initialize fastest?
+
+### 4. **VIDEO-SPECIFIC PERFORMANCE PATTERNS** ⭐⭐
+**IMPORTANT**: Analyze per-video breakdowns to identify:
+- **Marginal video handling**: How do generations perform on Videos 4, 10, 12, 18?
+- **True positive detection**: Performance on Videos 7, 8, 9, 11, 12
+- **False positive filtering**: Performance on Videos 1-6
+- **Model consensus**: When multiple models agree vs disagree
+
+### 5. **UNIFIED ARCHITECTURE VALIDATION** ⭐
+**VALIDATION**: Confirm refactored code works correctly:
+- **No hardcoded model errors**: All models running from unified registry
+- **Complete model coverage**: All ensemble models appearing in logs
+- **Consistent logging format**: Individual model detections logged properly
+
+## Expected Outcomes
+
+### Performance Hypothesis:
+1. **YOLOv12** should show improved accuracy over older generations
+2. **YOLOv10** may offer best speed/accuracy balance  
+3. **YOLOv8** provides established baseline for comparison
+4. **MegaDetector models** may outperform YOLO on wildlife-specific detection
+
+### Critical Success Metrics:
+- **Animal detection rate**: Successfully detecting Videos 7, 8, 9, 11, 12
+- **False positive filtering**: Avoiding Videos 1-6 false detections
+- **Model contribution balance**: No single model dominating all detections
+- **Processing reliability**: All 20 videos complete without errors
+
+## Analysis Instructions for Next Claude
+
+1. **Find the three log files** from overnight processing
+2. **Extract model contribution sections** from each log
+3. **Compare detection counts, confidence scores, and video coverage**
+4. **Identify best-performing YOLO generation**
+5. **Determine optimal YOLO + MegaDetector combinations**
+6. **Recommend production ensemble configuration**
+
+### Log File Locations:
+- Look for most recent `wildcams_YYYYMMDD_HHMMSS.log` files
+- Three separate experiments = three separate log files
+- Focus on "🤖 MODEL CONTRIBUTION ANALYSIS" sections
+- Pay attention to "PER-VIDEO MODEL BREAKDOWN" data
+
+## Ground Truth Reference:
+- **Videos 7, 8, 9, 11, 12**: Should detect animals (true positives)
+- **Videos 1-6**: Should NOT detect animals (false positives)  
+- **Videos 13-19**: Camera handling (typically filtered in Step 2)
+- **Videos 4, 10, 12, 18**: Known marginal cases for detailed analysis

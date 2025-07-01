@@ -83,8 +83,7 @@ class VideoProcessorBase:
         self.min_samples = int(os.getenv('MIN_SAMPLES', '2'))
         
         # Model configuration parameters
-        self.megadetector_version = os.getenv('MEGADETECTOR_VERSION', 'MDV6-rtdetr-c')
-        self.ensemble_models = os.getenv('ENSEMBLE_MODELS', 'yolov8x,yolov8m,yolov8n,megadetector_v6').split(',')
+        self.ensemble_models = os.getenv('ENSEMBLE_MODELS').split(',')
         
         # Animal validation thresholds
         self.megadetector_high_conf = float(os.getenv('MEGADETECTOR_HIGH_CONFIDENCE', '0.3'))
@@ -105,7 +104,6 @@ class VideoProcessorBase:
         # Initialize ML detection ensemble after all parameters are set
         self.ml_ensemble = MLDetectionEnsemble(
             confidence_threshold=self.confidence_threshold,
-            megadetector_version=self.megadetector_version,
             ensemble_models=self.ensemble_models,
             cache_dir=self.models_cache_dir
         )
@@ -121,16 +119,13 @@ class VideoProcessorBase:
     @staticmethod
     def setup_common_arguments(parser):
         """Add common arguments to an argument parser."""
-        # Model configuration
-        parser.add_argument('--megadetector-version', '-m', default='MDV6-rtdetr-c', 
-                           choices=['MDV6-yolov9-c', 'MDV6-yolov9-e', 'MDV6-yolov10-c', 'MDV6-yolov10-e', 'MDV6-rtdetr-c'],
-                           help='MegaDetector v6 variant to use (default: MDV6-rtdetr-c)')
-        parser.add_argument('--ensemble', '-e', default='yolov8x,yolov8m,yolov8n,megadetector_v6',
-                           help='Comma-separated list of models to use in ensemble (default: yolov8x,yolov8m,yolov8n,megadetector_v6)')
+        # Model configuration  
+        parser.add_argument('--ensemble', '-e', default='yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c',
+                           help='Comma-separated list of models to use in ensemble. Available: yolov8x,yolov8m,yolov8n,yolov10n,yolov10s,yolov10m,yolov10b,yolov10l,yolov10x,yolo12n,yolo12s,yolo12m,yolo12l,yolo12x,MDV6-yolov9-c,MDV6-yolov9-e,MDV6-yolov10-c,MDV6-yolov10-e,MDV6-rtdetr-c (default: yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c)')
         
         # Processing parameters
-        parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.1,
-                           help='Confidence threshold for detections (default: 0.1)')
+        parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.25,
+                           help='Confidence threshold for detections (default: 0.25)')
         parser.add_argument('--max-frames', type=int, default=20,
                            help='Maximum frames to extract per video (default: 20)')
         parser.add_argument('--frame-skip', type=int, default=15,
@@ -151,6 +146,18 @@ class VideoProcessorBase:
         # Camera handling detection
         parser.add_argument('--detection-density-threshold', type=float, default=15.0,
                            help='Detection density threshold for camera handling detection (default: 15.0)')
+        parser.add_argument('--composite-motion-threshold', type=int, default=3000000,
+                           help='Composite motion threshold for camera handling (default: 3000000)')
+        parser.add_argument('--min-motion-threshold', type=int, default=100,
+                           help='Minimum motion threshold to avoid processing static videos (default: 100)')
+        parser.add_argument('--motion-frames-weight', type=float, default=1.2,
+                           help='Weight exponent for motion frames in composite score (default: 1.2)')
+        parser.add_argument('--motion-regions-weight', type=float, default=1.1,
+                           help='Weight exponent for motion regions in composite score (default: 1.1)')
+        parser.add_argument('--motion-tracks-weight', type=float, default=1.0,
+                           help='Weight exponent for motion tracks in composite score (default: 1.0)')
+        parser.add_argument('--large-region-multiplier', type=float, default=15.0,
+                           help='Multiplier for large region percentage in composite score (default: 15.0)')
         parser.add_argument('--low-confidence-ratio-threshold', type=float, default=0.7,
                            help='Low confidence ratio threshold for camera handling (default: 0.7)')
         parser.add_argument('--low-confidence-cutoff', type=float, default=0.2,
@@ -169,7 +176,7 @@ class VideoProcessorBase:
                            help='Motion detection method (default: MOG2)')
         parser.add_argument('--motion-var-threshold', type=int, default=32,
                            help='Motion detection variance threshold - higher = less sensitive (default: 32)')
-        parser.add_argument('--min-motion-area', type=int, default=2000,
+        parser.add_argument('--min-motion-area', type=int, default=300,
                            help='Minimum motion area threshold in pixels (default: 2000)')
         parser.add_argument('--max-motion-area', type=int, default=80000,
                            help='Maximum motion area threshold in pixels (default: 80000)')
@@ -185,12 +192,43 @@ class VideoProcessorBase:
                            help='Maximum width/height aspect ratio for motion regions (default: 5.0)')
         parser.add_argument('--motion-margin', type=int, default=30,
                            help='Margin to expand motion regions for ML context (default: 30)')
+        
+        # Temporal consistency arguments (for Next-Gen processor)
+        parser.add_argument('--min-track-duration', type=float, default=0.1,
+                           help='Minimum track duration in seconds (default: 0.1)')
+        parser.add_argument('--max-skip-frames', type=int, default=3,
+                           help='Maximum frames to skip in tracking (default: 3)')
+        parser.add_argument('--tracking-distance-threshold', type=float, default=150.0,
+                           help='Maximum distance for tracking association in pixels (default: 150.0)')
+        parser.add_argument('--full-frame-validation-frames', type=int, default=5,
+                           help='Consecutive frames needed for full-frame validation (default: 5)')
+        parser.add_argument('--anchor-confidence-threshold', type=float, default=0.5,
+                           help='Minimum confidence for anchor point detection (default: 0.5)')
+        parser.add_argument('--min-track-frames', type=int, default=1,
+                           help='Minimum frames required for valid track (default: 1)')
+        parser.add_argument('--track-search-seconds', type=float, default=2.0,
+                           help='Seconds to search backwards/forwards from anchor (default: 2.0)')
+        parser.add_argument('--size-ratio-threshold', type=float, default=0.3,
+                           help='Minimum size ratio for same animal detection (default: 0.3)')
+        
+        # Step 4 full-frame validation parameters
+        parser.add_argument('--max-validation-frames', type=int, default=5,
+                           help='Maximum frames to validate with full ensemble (default: 5)')
+        parser.add_argument('--crop-weight', type=float, default=0.6,
+                           help='Weight for crop-based ML scores (default: 0.6)')
+        parser.add_argument('--fullframe-weight', type=float, default=0.4,
+                           help='Weight for full-frame ML scores (default: 0.4)')
+        parser.add_argument('--min-crop-size', type=int, default=900,
+                           help='Minimum crop area in pixels for ML analysis (default: 900)')
+        parser.add_argument('--temporal-spread-seconds', type=float, default=2.0,
+                           help='Minimum seconds between selected validation frames (default: 2.0)')
+        parser.add_argument('--accepted-rtdetr-overlap', type=float, default=0.5,
+                           help='Minimum overlap threshold for accepting RT-DETR extended class detections (default: 0.5)')
     
     @staticmethod
     def set_environment_from_args(args, include_motion=False):
         """Set environment variables from parsed arguments."""
         import os
-        os.environ['MEGADETECTOR_VERSION'] = args.megadetector_version
         os.environ['ENSEMBLE_MODELS'] = args.ensemble
         os.environ['CONFIDENCE_THRESHOLD'] = str(args.confidence_threshold)
         os.environ['MAX_FRAMES_PER_VIDEO'] = str(args.max_frames)
@@ -201,10 +239,33 @@ class VideoProcessorBase:
         os.environ['WEAK_EVIDENCE_THRESHOLD'] = str(args.weak_evidence_threshold)
         os.environ['WILDLIFE_MODEL_CONFIDENCE'] = str(args.wildlife_model_confidence)
         os.environ['DETECTION_DENSITY_THRESHOLD'] = str(args.detection_density_threshold)
+        os.environ['COMPOSITE_MOTION_THRESHOLD'] = str(args.composite_motion_threshold)
+        os.environ['MIN_MOTION_THRESHOLD'] = str(args.min_motion_threshold)
+        os.environ['MOTION_FRAMES_WEIGHT'] = str(args.motion_frames_weight)
+        os.environ['MOTION_REGIONS_WEIGHT'] = str(args.motion_regions_weight)
+        os.environ['MOTION_TRACKS_WEIGHT'] = str(args.motion_tracks_weight)
+        os.environ['LARGE_REGION_MULTIPLIER'] = str(args.large_region_multiplier)
         os.environ['LOW_CONFIDENCE_RATIO_THRESHOLD'] = str(args.low_confidence_ratio_threshold)
         os.environ['LOW_CONFIDENCE_CUTOFF'] = str(args.low_confidence_cutoff)
         os.environ['CLUSTERING_EPS'] = str(args.clustering_eps)
         os.environ['MIN_SAMPLES'] = str(args.min_samples)
+        
+        # Temporal consistency parameters
+        os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
+        os.environ['MAX_SKIP_FRAMES'] = str(args.max_skip_frames)
+        os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
+        os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
+        os.environ['ANCHOR_CONFIDENCE_THRESHOLD'] = str(args.anchor_confidence_threshold)
+        os.environ['MIN_TRACK_FRAMES'] = str(args.min_track_frames)
+        os.environ['TRACK_SEARCH_SECONDS'] = str(args.track_search_seconds)
+        os.environ['SIZE_RATIO_THRESHOLD'] = str(args.size_ratio_threshold)
+        
+        # Step 4 validation parameters
+        os.environ['MAX_VALIDATION_FRAMES'] = str(args.max_validation_frames)
+        os.environ['CROP_WEIGHT'] = str(args.crop_weight)
+        os.environ['FULLFRAME_WEIGHT'] = str(args.fullframe_weight)
+        os.environ['MIN_CROP_SIZE'] = str(args.min_crop_size)
+        os.environ['TEMPORAL_SPREAD_SECONDS'] = str(args.temporal_spread_seconds)
         
         # Motion detection specific parameters
         if include_motion:
@@ -218,6 +279,12 @@ class VideoProcessorBase:
             os.environ['MIN_REGION_HEIGHT'] = str(args.min_region_height)
             os.environ['MAX_ASPECT_RATIO'] = str(args.max_aspect_ratio)
             os.environ['MOTION_MARGIN'] = str(args.motion_margin)
+            
+            # Temporal consistency parameters
+            os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
+            os.environ['MAX_SKIP_FRAMES'] = str(args.max_skip_frames)
+            os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
+            os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
     
     def setup_logging(self):
         """Setup single logger to file and console."""
@@ -262,7 +329,6 @@ class VideoProcessorBase:
         logger.info("=" * 80)
         logger.info("🎯 MODEL CONFIGURATION")
         logger.info("=" * 80)
-        logger.info(f"MegaDetector Version: {self.megadetector_version}")
         logger.info(f"Ensemble Models: {', '.join(self.ensemble_models)}")
         logger.info(f"Confidence Threshold: {self.confidence_threshold}")
         logger.info("=" * 80)
@@ -639,21 +705,74 @@ class VideoProcessorBase:
         except Exception as e:
             logger.error(f"❌ Failed to save clustering results: {e}")
     
+    def _debug_numpy_objects(self, obj, path=""):
+        """Debug helper to find numpy objects in nested data."""
+        if hasattr(obj, 'dtype'):  # numpy array/scalar
+            logger.error(f"Found numpy object at {path}: type={type(obj)}, dtype={obj.dtype}")
+        elif isinstance(obj, dict):
+            for k, v in obj.items():
+                self._debug_numpy_objects(v, f"{path}.{k}")
+        elif isinstance(obj, (list, tuple)):
+            for i, item in enumerate(obj):
+                self._debug_numpy_objects(item, f"{path}[{i}]")
+
+    def _convert_for_json(self, obj):
+        """Convert numpy types and other non-JSON types for serialization."""
+        import numpy as np
+        
+        # Check if object has numpy module in its type string - catch all numpy types
+        obj_type_str = str(type(obj))
+        if 'numpy' in obj_type_str:
+            if hasattr(obj, 'item'):
+                return obj.item()
+            elif hasattr(obj, 'tolist'):
+                return obj.tolist()
+            else:
+                # Last resort for numpy objects
+                return float(obj)
+        
+        # Handle specific numpy types
+        if isinstance(obj, (np.integer, np.floating, np.bool_, np.complexfloating)):
+            return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif hasattr(obj, 'dtype'):  # Other numpy-like objects
+            if hasattr(obj, 'item'):  # numpy scalars
+                return obj.item()
+            elif hasattr(obj, 'tolist'):  # numpy arrays
+                return obj.tolist()
+        elif hasattr(obj, 'item') and hasattr(obj, '__float__'):  # numpy scalars without dtype
+            try:
+                return obj.item()
+            except:
+                return float(obj)
+        elif isinstance(obj, Path):
+            return str(obj)
+        elif isinstance(obj, dict):
+            return {k: self._convert_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._convert_for_json(item) for item in obj]
+        else:
+            return obj
+
     def save_analysis(self, analysis: Dict, video_path: Path):
         """Save analysis results to JSON file."""
         analysis_file = self.output_dir / f"{video_path.stem}_analysis.json"
         
         try:
-            # Convert Path objects to strings for JSON serialization
-            analysis_copy = analysis.copy()
-            if 'video_path' in analysis_copy:
-                analysis_copy['video_path'] = str(analysis_copy['video_path'])
+            # Convert all non-JSON types for serialization
+            analysis_copy = self._convert_for_json(analysis)
             
             with open(analysis_file, 'w') as f:
                 json.dump(analysis_copy, f, indent=2)
             logger.debug(f"💾 Saved analysis to {analysis_file}")
         except Exception as e:
             logger.error(f"❌ Failed to save analysis: {e}")
+            # Debug: Try to find the problematic data
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
+            # Try to identify the numpy objects
+            self._debug_numpy_objects(analysis)
     
     def mark_as_processed(self, video_path: Path):
         """Create .processed marker file."""

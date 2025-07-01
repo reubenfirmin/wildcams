@@ -22,10 +22,20 @@ import cv2
 import numpy as np
 import logging
 from typing import List, Dict, Optional, Tuple
-from ultralytics import YOLO
+
+# Set torch cache directory BEFORE importing torch
+cache_dir = os.path.abspath('./models_cache/torch')
+os.makedirs(cache_dir, exist_ok=True)
+os.environ['TORCH_HOME'] = cache_dir
+
 import torch
+# Set hub directory immediately after torch import
+torch.hub.set_dir(cache_dir)
+
+from ultralytics import YOLO
 import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
+
 
 # PyTorch-Wildlife imports
 try:
@@ -34,6 +44,36 @@ try:
 except ImportError:
     PYTORCH_WILDLIFE_AVAILABLE = False
 
+def calculate_bbox_overlap(bbox1, bbox2):
+    """Calculate overlap percentage of bbox2 within bbox1.
+    
+    Args:
+        bbox1: [x1, y1, x2, y2] - reference bbox (crop region)
+        bbox2: [x1, y1, x2, y2] - detection bbox (RT-DETR detection)
+    
+    Returns:
+        float: Overlap percentage (0.0 to 1.0) of bbox2 area that overlaps with bbox1
+    """
+    x1_1, y1_1, x2_1, y2_1 = bbox1
+    x1_2, y1_2, x2_2, y2_2 = bbox2
+    
+    # Calculate intersection
+    ix1 = max(x1_1, x1_2)
+    iy1 = max(y1_1, y1_2)
+    ix2 = min(x2_1, x2_2)
+    iy2 = min(y2_1, y2_2)
+    
+    if ix1 >= ix2 or iy1 >= iy2:
+        return 0.0  # No overlap
+    
+    intersection_area = (ix2 - ix1) * (iy2 - iy1)
+    bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+    
+    if bbox2_area <= 0:
+        return 0.0
+    
+    return intersection_area / bbox2_area
+
 # Get loggers
 logger = logging.getLogger('wildcams')
 analysis_logger = logger
@@ -41,19 +81,27 @@ analysis_logger = logger
 class MLDetectionEnsemble:
     """Enhanced ensemble ML detection system with accuracy improvements."""
     
-    def __init__(self, confidence_threshold: float = 0.1, megadetector_version: str = 'MDV6-rtdetr-c', ensemble_models: List[str] = None, cache_dir: Optional['Path'] = None):
+    def __init__(self, confidence_threshold: float = 0.1, ensemble_models: List[str] = None, cache_dir: Optional['Path'] = None):
         self.confidence_threshold = confidence_threshold
-        self.megadetector_version = megadetector_version
-        self.ensemble_models = ensemble_models or ['yolov8x', 'yolov8m', 'yolov8n', 'megadetector_v6']
+        self.ensemble_models = ensemble_models  # No default here - comes from base processor
         self.cache_dir = cache_dir
+        
+        # Unified model registry - all YOLO-compatible models
+        self.yolo_detectors = {}  # Will store all YOLO models (v8, v10, v12, etc.)
+        
+        # Model storage for multiple MegaDetector variants
+        self.megadetector_variants = {}  # Will store multiple MD models
         
         # Accuracy Enhancement 2: Model-specific confidence thresholds (optimized for recall)
         self.model_thresholds = {
-            'yolov8x': 0.05,        # Lower for primary model
-            'yolov8m': 0.08,        # Slightly higher for backup
-            'yolov8n': 0.12,        # Higher for fallback
-            'megadetector_v6': 0.1, # Wildlife-specific threshold
-            'deepfaune': 0.15       # Conservative for classification model
+            'yolov8x': 0.05,           # Primary YOLO model
+            'yolov8m': 0.08,           # Medium YOLO model
+            'MDV6-rtdetr-c': 0.1,      # RT-DETR variant (highest accuracy)
+            'MDV6-yolov9-e': 0.1,      # YOLOv9 variant (balanced)
+            'MDV6-yolov9-c': 0.1,      # YOLOv9 compact
+            'MDV6-yolov10-e': 0.1,     # YOLOv10 variants
+            'MDV6-yolov10-c': 0.1,
+            'deepfaune': 0.15          # Conservative for classification model
         }
         
         # Accuracy Enhancement 3: Multi-scale detection settings
@@ -70,10 +118,6 @@ class MLDetectionEnsemble:
         ]
         
         # Model initialization flags
-        self.detector = None
-        self.detector_backup = None
-        self.megadetector = None
-        self.megadetector_v6 = None
         self.deepfaune_detector = None
         self.feature_extractor = None
         
@@ -84,86 +128,66 @@ class MLDetectionEnsemble:
         """Initialize ML models based on ensemble configuration."""
         try:
             logger.info(f"🤖 Initializing ML detection ensemble with models: {self.ensemble_models}")
-            logger.info(f"🎯 MegaDetector version: {self.megadetector_version}")
             
-            # Set up model caching for PyTorch-Wildlife
+            # Cache directory already set at module import time
             if self.cache_dir:
-                import os
-                os.environ['TORCH_HOME'] = str(self.cache_dir / 'torch')
-                os.environ['PYTORCH_WILDLIFE_CACHE'] = str(self.cache_dir / 'pytorch_wildlife')
                 logger.info(f"📦 Model cache directory: {self.cache_dir}")
-                
-                # Create cache subdirectories
-                (self.cache_dir / 'torch').mkdir(exist_ok=True)
-                (self.cache_dir / 'pytorch_wildlife').mkdir(exist_ok=True)
+                logger.info(f"🔧 TORCH_HOME: {os.environ.get('TORCH_HOME', 'not set')}")
+                logger.info(f"🔧 torch.hub.get_dir(): {torch.hub.get_dir()}")
             
-            # Primary YOLOv8x detector
-            if 'yolov8x' in self.ensemble_models:
-                try:
-                    logger.info("Loading YOLOv8x primary detector...")
-                    self.detector = YOLO('yolov8x.pt')
-                    logger.info("✅ YOLOv8x primary detector loaded successfully")
-                except Exception as e:
-                    logger.error(f"❌ Failed to load YOLOv8x primary detector: {e}")
-            else:
-                logger.info("⏭️ Skipping YOLOv8x (not in ensemble configuration)")
+            # Load all YOLO models in unified registry
+            all_yolo_variants = [
+                'yolov8n', 'yolov8s', 'yolov8m', 'yolov8l', 'yolov8x',
+                'yolov10n', 'yolov10s', 'yolov10m', 'yolov10b', 'yolov10l', 'yolov10x',
+                'yolo12n', 'yolo12s', 'yolo12m', 'yolo12l', 'yolo12x'
+            ]
             
-            # Backup YOLOv8m detector
-            if 'yolov8m' in self.ensemble_models:
-                try:
-                    logger.info("Loading YOLOv8m backup detector...")
-                    self.detector_backup = YOLO('yolov8m.pt')
-                    logger.info("✅ YOLOv8m backup detector loaded successfully")
-                except Exception as e:
-                    logger.error(f"❌ Failed to load YOLOv8m backup detector: {e}")
-            else:
-                logger.info("⏭️ Skipping YOLOv8m (not in ensemble configuration)")
+            for variant in all_yolo_variants:
+                if variant in self.ensemble_models:
+                    try:
+                        logger.info(f"Loading {variant.upper()} detector...")
+                        self.yolo_detectors[variant] = YOLO(f'{variant}.pt')
+                        logger.info(f"✅ {variant.upper()} detector loaded successfully")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to load {variant.upper()} detector: {e}")
+                        self.yolo_detectors[variant] = None
+                else:
+                    logger.info(f"⏭️ Skipping {variant.upper()} (not in ensemble configuration)")
             
-            # MegaDetector fallback (YOLOv8n)
-            if 'yolov8n' in self.ensemble_models:
-                try:
-                    logger.info("Loading YOLOv8n as MegaDetector fallback...")
-                    self.megadetector = YOLO('yolov8n.pt')
-                    logger.info("✅ YOLOv8n MegaDetector fallback loaded successfully")
-                except Exception as e:
-                    logger.error(f"❌ Failed to load YOLOv8n MegaDetector fallback: {e}")
-            else:
-                logger.info("⏭️ Skipping YOLOv8n (not in ensemble configuration)")
+            # Load multiple MegaDetector variants
+            megadetector_variants_in_ensemble = [model for model in self.ensemble_models if model.startswith('MDV6-')]
             
-            # PyTorch-Wildlife MegaDetector v6
-            if 'megadetector_v6' in self.ensemble_models and PYTORCH_WILDLIFE_AVAILABLE:
-                try:
-                    logger.info(f"🦎 Loading MegaDetector v6 ({self.megadetector_version})...")
-                    
-                    # Check if model is already cached
-                    if self.cache_dir:
-                        model_cache_path = self.cache_dir / 'pytorch_wildlife' / f'{self.megadetector_version}.pt'
-                        if model_cache_path.exists():
-                            logger.info(f"📦 Using cached model: {model_cache_path}")
-                    
-                    # Load model with caching enabled and verbose disabled
-                    self.megadetector_v6 = pw_detection.MegaDetectorV6(
-                        version=self.megadetector_version, 
-                        pretrained=True,
-                        device='auto'  # Let PyTorch-Wildlife choose best device
-                    )
-                    
-                    # Disable verbose to prevent KeyError with unknown class IDs
-                    if hasattr(self.megadetector_v6, 'predictor') and hasattr(self.megadetector_v6.predictor, 'args'):
-                        self.megadetector_v6.predictor.args.verbose = False
-                    logger.info(f"✅ MegaDetector v6 ({self.megadetector_version}) loaded successfully")
-                    
-                    # Log cache status
-                    if self.cache_dir:
-                        logger.info(f"📦 Model cached to: {self.cache_dir / 'pytorch_wildlife'}")
+            if megadetector_variants_in_ensemble and PYTORCH_WILDLIFE_AVAILABLE:
+                for variant in megadetector_variants_in_ensemble:
+                    try:
+                        logger.info(f"🦎 Loading MegaDetector v6 variant: {variant}")
                         
-                except Exception as e:
-                    logger.error(f"❌ Failed to load MegaDetector v6 ({self.megadetector_version}): {e}")
-                    self.megadetector_v6 = None
-            elif 'megadetector_v6' in self.ensemble_models:
-                logger.warning("⚠️ PyTorch-Wildlife not available - MegaDetector v6 disabled")
+                        # Load model - PyTorch-Wildlife should use environment cache settings
+                        md_model = pw_detection.MegaDetectorV6(
+                            version=variant, 
+                            pretrained=True,
+                            device='auto'  # Let PyTorch-Wildlife choose best device
+                        )
+                        
+                        # Disable verbose to prevent KeyError with unknown class IDs
+                        if hasattr(md_model, 'predictor') and hasattr(md_model.predictor, 'args'):
+                            md_model.predictor.args.verbose = False
+                        
+                        self.megadetector_variants[variant] = md_model
+                        logger.info(f"✅ MegaDetector v6 ({variant}) loaded successfully")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Failed to load MegaDetector v6 variant {variant}: {e}")
+                        self.megadetector_variants[variant] = None
+                
+                # Log cache status
+                if self.cache_dir and self.megadetector_variants:
+                    logger.info(f"📦 Models cached to: {self.cache_dir / 'pytorch_wildlife'}")
+                        
+            elif megadetector_variants_in_ensemble:
+                logger.warning("⚠️ PyTorch-Wildlife not available - MegaDetector variants disabled")
             else:
-                logger.info("⏭️ Skipping MegaDetector v6 (not in ensemble configuration)")
+                logger.info("⏭️ Skipping MegaDetector variants (none in ensemble configuration)")
             
             # DeepFaune is a classification model, not detection - always disable for detection ensemble
             logger.info("🦎 DeepFaune is a classification model, not detection - skipping in detection ensemble")
@@ -320,7 +344,11 @@ class MLDetectionEnsemble:
         self, 
         frame: np.ndarray, 
         timestamp_seconds: float = 0.0,
-        frame_idx: int = 0
+        frame_idx: int = 0,
+        full_frame: np.ndarray = None,
+        crop_region: Tuple[int, int, int, int] = None,
+        crop_regions: List[Tuple[int, int, int, int]] = None,
+        accepted_rtdetr_overlap: float = 0.5
     ) -> List[Dict]:
         """
         Run the full 5-model ensemble detection on a frame.
@@ -337,149 +365,340 @@ class MLDetectionEnsemble:
         
         step_counter = 1
         
-        # 1. Primary YOLOv8x detector
-        if self.detector is not None:
-            try:
-                logger.info(f"🔍 Running YOLOv8x detection...")
-                results = self.detector(frame, conf=self.confidence_threshold, verbose=False)
-                primary_detections = 0
-                for result in results:
-                    for box in result.boxes:
-                        detection = {
-                            'confidence': float(box.conf),
-                            'bbox': box.xyxy.tolist()[0],
-                            'source': 'primary_original'
-                        }
-                        detections.append(detection)
-                        primary_detections += 1
-                        logger.debug(f"YOLOv8x: conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
-                logger.info(f"✅ YOLOv8x: {primary_detections} detections found")
-            except Exception as e:
-                analysis_logger.error(f"Primary model failed: {e}")
-                logger.error(f"❌ YOLOv8x failed: {e}")
+        # Run all YOLO models from unified registry
+        yolo_models_in_ensemble = [model for model in self.ensemble_models if not model.startswith('MDV6-')]
         
-        # 2. Backup YOLOv8m detector
-        if self.detector_backup is not None:
-            try:
-                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running YOLOv8m backup model with conf={self.confidence_threshold}")
-                logger.info(f"🔍 Running YOLOv8m detection...")
-                results = self.detector_backup(frame, conf=self.confidence_threshold, verbose=False)
-                backup_detections = 0
-                for result in results:
-                    for box in result.boxes:
-                        detection = {
-                            'confidence': float(box.conf),
-                            'bbox': box.xyxy.tolist()[0],
-                            'source': 'backup_original'
-                        }
-                        detections.append(detection)
-                        backup_detections += 1
-                        analysis_logger.info(f"BACKUP: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
-                logger.info(f"✅ YOLOv8m: {backup_detections} detections found")
-                analysis_logger.info(f"Backup model found {backup_detections} detections")
-                step_counter += 1
-            except Exception as e:
-                analysis_logger.error(f"Backup model failed: {e}")
-                logger.error(f"❌ YOLOv8m failed: {e}")
-        
-        # 3. MegaDetector fallback (YOLOv8n)
-        if self.megadetector is not None:
-            try:
-                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector fallback (YOLOv8n) with conf=0.1")
-                logger.info(f"🔍 Running YOLOv8n (MegaDetector fallback)...")
-                results = self.megadetector(frame, conf=0.1, verbose=False)
-                mega_detections = 0
-                for result in results:
-                    for box in result.boxes:
-                        detection = {
-                            'confidence': float(box.conf),
-                            'bbox': box.xyxy.tolist()[0],
-                            'source': 'megadetector_fallback',
-                            'class': 'detection'
-                        }
-                        detections.append(detection)
-                        mega_detections += 1
-                        analysis_logger.info(f"MEGADETECTOR_FALLBACK: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
-                logger.info(f"✅ YOLOv8n: {mega_detections} detections found")
-                analysis_logger.info(f"MegaDetector fallback found {mega_detections} total detections")
-                step_counter += 1
-            except Exception as e:
-                analysis_logger.error(f"MegaDetector fallback failed: {e}")
-                logger.error(f"❌ YOLOv8n failed: {e}")
-        
-        # 4. MegaDetector v6 (PyTorch-Wildlife)
-        if self.megadetector_v6 is not None:
-            try:
-                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector v6 (PyTorch-Wildlife)")
-                logger.info(f"🔍 Running MegaDetector v6 ({self.megadetector_version})...")
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                analysis_logger.info(f"MegaDetector v6 input: numpy array {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
-                
+        for model_name in yolo_models_in_ensemble:
+            detector = self.yolo_detectors.get(model_name)
+            if detector is not None:
                 try:
-                    results = self.megadetector_v6.single_image_detection(
-                        rgb_frame,
-                        det_conf_thres=0.05
-                    )
-                except KeyError as ke:
-                    # Handle PyTorch-Wildlife bug with unknown class IDs
-                    # The model detected classes outside the standard MegaDetector mapping (0:animal, 1:person, 2:vehicle)
-                    logger.info(f"🔍 MegaDetector v6 detected unknown class ID {ke} - likely animal detection from extended class set")
-                    logger.debug(f"Standard MegaDetector classes: 0=animal, 1=person, 2=vehicle. Detected class {ke} suggests extended model.")
+                    analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running {model_name.upper()} model with conf={self.confidence_threshold}")
+                    logger.info(f"🔍 Running {model_name.upper()} detection...")
+                    results = detector(frame, conf=self.confidence_threshold, verbose=False)
+                    model_detections = 0
+                    for result in results:
+                        for box in result.boxes:
+                            confidence = float(box.conf)
+                            bbox = box.xyxy.tolist()[0]
+                            
+                            # Log high-confidence detections with spatial analysis
+                            if confidence >= 0.3 and crop_regions is not None and len(crop_regions) > 0:
+                                max_overlap = 0.0
+                                for crop_bbox in crop_regions:
+                                    overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                    max_overlap = max(max_overlap, overlap)
+                                
+                                logger.info(f"🔍 {model_name.upper()} high-conf: conf={confidence:.3f}, bbox={bbox}, max_overlap={max_overlap:.3f} at {timestamp_seconds:.1f}s")
+                                if len(crop_regions) <= 3:  # Show details for first few crop regions
+                                    for crop_bbox in crop_regions:
+                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                        logger.info(f"  📏 Crop {crop_bbox} vs {model_name.upper()} {bbox} = overlap {overlap:.3f}")
+                            
+                            detection = {
+                                'confidence': confidence,
+                                'bbox': bbox,
+                                'source': model_name
+                            }
+                            detections.append(detection)
+                            model_detections += 1
+                            logger.debug(f"{model_name.upper()}: conf={confidence:.4f}, bbox={bbox}")
                     
-                    # Try to get raw detection results directly from the predictor
+                    if model_detections > 0:
+                        analysis_logger.info(f"{model_name.upper()}: {model_detections} detections")
+                    logger.info(f"✅ {model_name.upper()}: {model_detections} detections found")
+                    step_counter += 1
+                except Exception as e:
+                    analysis_logger.error(f"{model_name.upper()} model failed: {e}")
+                    logger.error(f"❌ {model_name.upper()} failed: {e}")
+            else:
+                logger.warning(f"⚠️ {model_name.upper()} detector not loaded")
+        
+        # 3. MegaDetector v6 variants (PyTorch-Wildlife)
+        for variant_name, md_model in self.megadetector_variants.items():
+            if md_model is not None:
+                try:
+                    analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector v6 variant {variant_name}")
+                    logger.info(f"🔍 Running MegaDetector v6 ({variant_name})...")
+                    
+                    # RT-DETR needs full frame context, skip if only crop available
+                    if 'rtdetr' in variant_name.lower():
+                        if full_frame is not None:
+                            input_frame = full_frame
+                            logger.info(f"🖼️ Using full frame for RT-DETR: {input_frame.shape}")
+                        else:
+                            logger.info(f"⏭️ Skipping RT-DETR {variant_name} - no full frame available (crop-only context)")
+                            continue
+                    else:
+                        input_frame = frame
+                        logger.info(f"🔲 Using crop for {variant_name}: {input_frame.shape}")
+                    
+                    rgb_frame = cv2.cvtColor(input_frame, cv2.COLOR_BGR2RGB)
+                    analysis_logger.info(f"MegaDetector v6 input: numpy array {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
+                    
+                    # Debug RT-DETR input frame
+                    if 'rtdetr' in variant_name.lower():
+                        logger.info(f"🔍 RT-DETR input frame shape: {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
+                        logger.info(f"🔍 RT-DETR input frame range: min={rgb_frame.min()}, max={rgb_frame.max()}")
+                        logger.info(f"🔍 RT-DETR model threshold: {self.model_thresholds.get(variant_name, 0.1)}")
+                    
                     try:
-                        if hasattr(self.megadetector_v6, 'predictor') and hasattr(self.megadetector_v6.predictor, 'results'):
-                            raw_results = self.megadetector_v6.predictor.results[-1] if self.megadetector_v6.predictor.results else None
-                            if raw_results and hasattr(raw_results, 'boxes'):
-                                # Create custom results with raw class IDs
-                                results = {'detections': raw_results, 'raw_class_ids': True}
+                        results = md_model.single_image_detection(
+                            rgb_frame,
+                            det_conf_thres=self.model_thresholds.get(variant_name, 0.1)
+                        )
+                    except KeyError as ke:
+                        # Handle PyTorch-Wildlife bug with unknown class IDs
+                        # The model detected classes outside the standard MegaDetector mapping (0:animal, 1:person, 2=vehicle)
+                        logger.info(f"🔍 MegaDetector v6 ({variant_name}) detected unknown class ID {ke} - class not in standard mapping")
+                        logger.debug(f"Standard MegaDetector classes: 0=animal, 1=person, 2=vehicle. Class {ke} is from extended model.")
+                        
+                        # Try to get raw detection results directly from the predictor
+                        try:
+                            if hasattr(md_model, 'predictor') and hasattr(md_model.predictor, 'results'):
+                                raw_results = md_model.predictor.results[-1] if md_model.predictor.results else None
+                                if raw_results and hasattr(raw_results, 'boxes'):
+                                    # Create custom results with raw class IDs
+                                    results = {'detections': raw_results, 'raw_class_ids': True}
+                                else:
+                                    results = {'detections': None}
                             else:
                                 results = {'detections': None}
-                        else:
+                        except Exception as e:
+                            logger.debug(f"Could not extract raw results: {e}")
                             results = {'detections': None}
                     except Exception as e:
-                        logger.debug(f"Could not extract raw results: {e}")
+                        analysis_logger.error(f"{variant_name} failed: {e}")
                         results = {'detections': None}
                 
-                md_v6_detections = 0
-                analysis_logger.info(f"MegaDetector v6 result type: {type(results)}")
+                    md_v6_detections = 0
+                    analysis_logger.info(f"MegaDetector v6 result type: {type(results)}")
                 
-                if results is not None and isinstance(results, dict):
-                    detections_obj = results.get('detections', None)
-                    is_raw_class_ids = results.get('raw_class_ids', False)
-                    
-                    if detections_obj is not None:
-                        if is_raw_class_ids and hasattr(detections_obj, 'boxes'):
-                            # Handle raw Ultralytics results with potentially unknown class IDs
-                            logger.info("Processing MegaDetector v6 raw results with extended class IDs")
-                            try:
-                                boxes = detections_obj.boxes
-                                if hasattr(boxes, 'xyxy') and hasattr(boxes, 'conf') and hasattr(boxes, 'cls'):
-                                    xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
-                                    confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
-                                    cls_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                    if results is not None and isinstance(results, dict):
+                        detections_obj = results.get('detections', None)
+                        is_raw_class_ids = results.get('raw_class_ids', False)
+                        
+                        if detections_obj is not None:
+                            if is_raw_class_ids and hasattr(detections_obj, 'boxes'):
+                                # Handle raw Ultralytics results with potentially unknown class IDs
+                                logger.info("Processing MegaDetector v6 raw results with extended class IDs")
+                                try:
+                                    boxes = detections_obj.boxes
                                     
-                                    for i in range(len(xyxy)):
-                                        # Fix coordinate handling - xyxy should be [x1, y1, x2, y2]
-                                        x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
-                                        bbox = [x1, y1, x2, y2]
-                                        confidence = float(confs[i])
-                                        class_id = int(cls_ids[i])
+                                    # Debug: examine the raw box structure for RT-DETR
+                                    if 'rtdetr' in variant_name.lower():
+                                        logger.info(f"🔍 RT-DETR boxes object: {type(boxes)}")
+                                        if hasattr(boxes, 'data'):
+                                            raw_data = boxes.data.cpu().numpy() if hasattr(boxes.data, 'cpu') else boxes.data
+                                            logger.info(f"🔍 RT-DETR boxes.data shape: {raw_data.shape if hasattr(raw_data, 'shape') else 'no shape'}")
+                                            if hasattr(raw_data, 'shape') and len(raw_data.shape) >= 2 and raw_data.shape[0] > 0:
+                                                logger.info(f"🔍 RT-DETR raw data tensor (first detection): {raw_data[0]}")
+                                                # Check if this is actually CXCYWH format that needs conversion
+                                                if raw_data.shape[1] >= 4:
+                                                    cx, cy, w, h = raw_data[0][:4]
+                                                    x1_calc = cx - w/2
+                                                    y1_calc = cy - h/2  
+                                                    x2_calc = cx + w/2
+                                                    y2_calc = cy + h/2
+                                                    logger.info(f"🔍 RT-DETR CXCYWH interpretation: [{cx:.6f},{cy:.6f},{w:.6f},{h:.6f}] → [{x1_calc:.6f},{y1_calc:.6f},{x2_calc:.6f},{y2_calc:.6f}]")
+                                        if hasattr(boxes, 'xyxy'):
+                                            xyxy_data = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+                                            logger.info(f"🔍 RT-DETR boxes.xyxy shape: {xyxy_data.shape if hasattr(xyxy_data, 'shape') else 'no shape'}")
+                                            if hasattr(xyxy_data, 'shape') and len(xyxy_data.shape) >= 2 and xyxy_data.shape[0] > 0:
+                                                logger.info(f"🔍 RT-DETR boxes.xyxy (first detection): {xyxy_data[0]}")
+                                        if hasattr(boxes, 'xywh'):
+                                            xywh_data = boxes.xywh.cpu().numpy() if hasattr(boxes.xywh, 'cpu') else boxes.xywh  
+                                            logger.info(f"🔍 RT-DETR boxes.xywh shape: {xywh_data.shape if hasattr(xywh_data, 'shape') else 'no shape'}")
+                                            if hasattr(xywh_data, 'shape') and len(xywh_data.shape) >= 2 and xywh_data.shape[0] > 0:
+                                                logger.info(f"🔍 RT-DETR boxes.xywh (first detection): {xywh_data[0]}")
+                                    
+                                    # Try multiple coordinate formats for RT-DETR compatibility
+                                    coords_extracted = False
+                                    
+                                    if hasattr(boxes, 'xyxy') and hasattr(boxes, 'conf') and hasattr(boxes, 'cls'):
+                                        xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+                                        confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+                                        cls_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                                        coords_extracted = True
                                         
-                                        # Skip detections with invalid coordinates
-                                        if confidence >= 0.05 and x2 > x1 and y2 > y1:
-                                            det = {
-                                                'confidence': confidence,
-                                                'bbox': bbox,
-                                                'source': 'megadetector_v6',
-                                                'class': class_id,
-                                                'raw_class_id': True
-                                            }
-                                            detections.append(det)
-                                            md_v6_detections += 1
-                                            logger.info(f"✅ MegaDetector v6 raw: class_id={class_id}, conf={confidence:.4f}")
-                            except Exception as e:
-                                logger.error(f"Error parsing MegaDetector v6 raw results: {e}")
+                                        if 'rtdetr' in variant_name.lower():
+                                            logger.info(f"🔍 RT-DETR extracted xyxy coords: {xyxy[:3] if len(xyxy) > 0 else 'empty'}")
+                                            logger.info(f"🔍 RT-DETR extracted confs: {confs[:3] if len(confs) > 0 else 'empty'}")
+                                            logger.info(f"🔍 RT-DETR extracted cls_ids: {cls_ids[:3] if len(cls_ids) > 0 else 'empty'}")
+                                            if len(xyxy) > 0:
+                                                for i, coord in enumerate(xyxy[:3]):
+                                                    logger.info(f"🔍 RT-DETR detection {i}: [{coord[0]:.6f},{coord[1]:.6f},{coord[2]:.6f},{coord[3]:.6f}] conf={confs[i]:.3f} cls={cls_ids[i]}")
+                                    
+                                    elif hasattr(boxes, 'xywh') and hasattr(boxes, 'conf') and hasattr(boxes, 'cls'):
+                                        # RT-DETR might output in xywh format - convert to xyxy
+                                        xywh = boxes.xywh.cpu().numpy() if hasattr(boxes.xywh, 'cpu') else boxes.xywh
+                                        confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+                                        cls_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                                        
+                                        # Convert xywh to xyxy format
+                                        xyxy = []
+                                        for i in range(len(xywh)):
+                                            cx, cy, w, h = xywh[i]
+                                            x1 = cx - w/2
+                                            y1 = cy - h/2
+                                            x2 = cx + w/2
+                                            y2 = cy + h/2
+                                            xyxy.append([x1, y1, x2, y2])
+                                        xyxy = np.array(xyxy)
+                                        coords_extracted = True
+                                        
+                                        logger.info(f"🔄 RT-DETR converted xywh→xyxy: {xyxy[:3] if len(xyxy) > 0 else 'empty'}")
+                                    
+                                    elif 'rtdetr' in variant_name.lower() and hasattr(boxes, 'data'):
+                                        # RT-DETR coordinate fix: handle CXCYWH format from raw tensor
+                                        # RT-DETR often outputs in [cx, cy, w, h, conf, cls] format
+                                        logger.info("🔄 RT-DETR coordinate fix: checking CXCYWH format in raw data tensor")
+                                        raw_data = boxes.data.cpu().numpy() if hasattr(boxes.data, 'cpu') else boxes.data
+                                        
+                                        if len(raw_data.shape) >= 2 and raw_data.shape[1] >= 6:
+                                            # Extract raw values
+                                            cx_values = raw_data[:, 0]  # Center X
+                                            cy_values = raw_data[:, 1]  # Center Y  
+                                            w_values = raw_data[:, 2]   # Width
+                                            h_values = raw_data[:, 3]   # Height
+                                            confs = raw_data[:, 4]      # Confidence
+                                            cls_ids = raw_data[:, 5]    # Class ID
+                                            
+                                            # Check if this looks like CXCYWH format (non-zero cy values)
+                                            if len(cy_values) > 0 and any(cy > 0.01 for cy in cy_values):
+                                                # Convert CXCYWH to XYXY manually
+                                                xyxy = []
+                                                for i in range(len(raw_data)):
+                                                    cx, cy, w, h = cx_values[i], cy_values[i], w_values[i], h_values[i]
+                                                    x1 = cx - w/2
+                                                    y1 = cy - h/2
+                                                    x2 = cx + w/2
+                                                    y2 = cy + h/2
+                                                    xyxy.append([x1, y1, x2, y2])
+                                                xyxy = np.array(xyxy)
+                                                coords_extracted = True
+                                                
+                                                logger.info(f"🔧 RT-DETR CXCYWH→XYXY conversion successful: {len(xyxy)} detections")
+                                                if len(xyxy) > 0:
+                                                    logger.info(f"🔍 RT-DETR converted coordinates (first): [{xyxy[0][0]:.6f},{xyxy[0][1]:.6f},{xyxy[0][2]:.6f},{xyxy[0][3]:.6f}] conf={confs[0]:.3f}")
+                                            else:
+                                                # Fallback to raw XYXY extraction
+                                                xyxy = raw_data[:, :4]  # First 4 columns: x1, y1, x2, y2
+                                                coords_extracted = True
+                                                logger.info(f"🔄 RT-DETR using raw XYXY format: {xyxy[:3] if len(xyxy) > 0 else 'empty'}")
+                                    
+                                    if coords_extracted:
+                                        
+                                        # Collect all detections for summary logging
+                                        animals, persons, unknowns = [], [], []
+                                        
+                                        for i in range(len(xyxy)):
+                                            # Fix coordinate handling - xyxy should be [x1, y1, x2, y2]
+                                            x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
+                                            confidence = float(confs[i])
+                                            class_id = int(cls_ids[i])
+                                            
+                                            # Debug: log raw coordinates to understand coordinate system
+                                            if confidence >= 0.8 and 'rtdetr' in variant_name.lower():
+                                                logger.info(f"🔍 RT-DETR raw coords: [{x1:.3f},{y1:.3f},{x2:.3f},{y2:.3f}], frame_shape={frame.shape}, conf={confidence:.3f}")
+                                            
+                                            # RT-DETR coordinate repair: fix zero Y-coordinates
+                                            if 'rtdetr' in variant_name.lower() and y1 == 0.0 and y2 == 0.0:
+                                                # Estimate reasonable Y-coordinates based on frame dimensions and X-coordinates
+                                                h, w = frame.shape[:2] if len(frame.shape) > 2 else (frame.shape[0], frame.shape[1])
+                                                x_width = abs(x2 - x1)
+                                                
+                                                # Assume detection is roughly square/rectangular with similar aspect ratio
+                                                estimated_height = min(x_width * 1.2, 0.3)  # Max 30% of frame height
+                                                y_center = 0.5  # Assume center of frame
+                                                y1 = max(0.0, y_center - estimated_height/2)
+                                                y2 = min(1.0, y_center + estimated_height/2)
+                                                
+                                                logger.info(f"🔧 RT-DETR coordinate repair: Y [{0.0:.3f},{0.0:.3f}] → [{y1:.3f},{y2:.3f}] (width={x_width:.3f}, est_height={estimated_height:.3f})")
+                                            
+                                            # Use MegaDetector with confidence threshold - RT-DETR with full frame has reliable coordinates
+                                            coord_valid = x2 > x1 and y2 > y1
+                                            if confidence >= 0.05 and (coord_valid or 'rtdetr' in variant_name.lower()):
+                                                # RT-DETR coordinates: convert to pixel coordinates if needed
+                                                h, w = frame.shape[:2] if len(frame.shape) > 2 else (frame.shape[0], frame.shape[1])
+                                                
+                                                # RT-DETR coordinate conversion: always convert normalized coordinates to pixels
+                                                if 'rtdetr' in variant_name.lower() or (x1 <= 1.0 and y1 <= 1.0 and x2 <= 1.0 and y2 <= 1.0 and x1 >= 0.0 and y1 >= 0.0):
+                                                    # Convert normalized coordinates to pixel coordinates (RT-DETR can have x>1.0)
+                                                    x1_px, y1_px = x1 * w, y1 * h
+                                                    x2_px, y2_px = x2 * w, y2 * h
+                                                    bbox = [x1_px, y1_px, x2_px, y2_px]
+                                                    if 'rtdetr' in variant_name.lower() and confidence >= 0.8:
+                                                        logger.info(f"🔄 RT-DETR normalized→pixel: [{x1:.3f},{y1:.3f},{x2:.3f},{y2:.3f}] → [{x1_px:.1f},{y1_px:.1f},{x2_px:.1f},{y2_px:.1f}]")
+                                                elif x2 > x1 and y2 > y1:
+                                                    # Already pixel coordinates - use as-is
+                                                    bbox = [x1, y1, x2, y2]
+                                                else:
+                                                    # Invalid coordinates - use full frame as fallback
+                                                    bbox = [0, 0, w, h]
+                                                    logger.warning(f"⚠️ RT-DETR invalid coordinates [{x1:.3f},{y1:.3f},{x2:.3f},{y2:.3f}] - using full frame fallback")
+                                                
+                                                # Categorize detections for summary
+                                                accepted_detection = False
+                                                
+                                                if class_id == 0:  # 0=animal in standard MegaDetector
+                                                    det = {
+                                                        'confidence': confidence,
+                                                        'bbox': bbox,
+                                                        'source': f'megadetector_{variant_name}',
+                                                        'class': class_id,
+                                                        'raw_class_id': True
+                                                    }
+                                                    detections.append(det)
+                                                    md_v6_detections += 1
+                                                    animals.append((class_id, confidence))
+                                                    accepted_detection = True
+                                                elif class_id == 1:
+                                                    persons.append((class_id, confidence))
+                                                elif (confidence >= 0.8 and 'rtdetr' in variant_name.lower() and 
+                                                      crop_regions is not None):
+                                                    # Check spatial overlap with crop regions for high-confidence RT-DETR detections
+                                                    logger.info(f"🔍 RT-DETR checking {len(crop_regions)} crop regions for class_id={class_id}, conf={confidence:.3f}, bbox={bbox} at timestamp={timestamp_seconds:.1f}s")
+                                                    max_overlap = 0.0
+                                                    for crop_bbox in crop_regions[:3]:  # Show first 3 for debugging
+                                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                                        max_overlap = max(max_overlap, overlap)
+                                                        logger.info(f"  📏 Crop {crop_bbox} vs RT-DETR {bbox} = overlap {overlap:.3f}")
+                                                    # Calculate max over all regions
+                                                    for crop_bbox in crop_regions[3:]:
+                                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                                        max_overlap = max(max_overlap, overlap)
+                                                    
+                                                    if max_overlap >= accepted_rtdetr_overlap:
+                                                        # Accept high-confidence RT-DETR detection with sufficient spatial overlap
+                                                        det = {
+                                                            'confidence': confidence,
+                                                            'bbox': bbox,
+                                                            'source': f'megadetector_{variant_name}',
+                                                            'class': class_id,
+                                                            'raw_class_id': True,
+                                                            'extended_class': True,
+                                                            'spatial_overlap': max_overlap
+                                                        }
+                                                        detections.append(det)
+                                                        md_v6_detections += 1
+                                                        animals.append((class_id, confidence))
+                                                        accepted_detection = True
+                                                        logger.info(f"🔥 RT-DETR SPATIAL MATCH: class_id={class_id}, conf={confidence:.3f}, overlap={max_overlap:.3f}, bbox={bbox} at {timestamp_seconds:.1f}s")
+                                                    else:
+                                                        unknowns.append((class_id, confidence))
+                                                        logger.info(f"🔍 RT-DETR HIGH-CONF REJECTED: class_id={class_id}, conf={confidence:.3f}, max_overlap={max_overlap:.3f} < {accepted_rtdetr_overlap} at {timestamp_seconds:.1f}s")
+                                                else:
+                                                    unknowns.append((class_id, confidence))
+                                        
+                                        # Summary logging (one line per category)
+                                        if animals:
+                                            logger.info(f"✅ MegaDetector v6 ANIMALS: {len(animals)} detections added {[(c, f'{conf:.3f}') for c, conf in animals]}")
+                                        if persons:
+                                            logger.info(f"⚪ MegaDetector v6 PERSONS: {len(persons)} detections {[(c, f'{conf:.3f}') for c, conf in persons]}")
+                                        if unknowns:
+                                            logger.info(f"📊 MegaDetector v6 UNKNOWNS: {len(unknowns)} detections {[(c, f'{conf:.3f}') for c, conf in unknowns]}")
+                                except Exception as e:
+                                    logger.error(f"Error parsing MegaDetector v6 raw results: {e}")
                         elif hasattr(detections_obj, 'xyxy'):
                             # Standard supervision.Detections format
                             logger.debug("Processing MegaDetector v6 supervision.Detections format")
@@ -500,35 +719,61 @@ class MLDetectionEnsemble:
                                     box = boxes[i]
                                     conf = confidences[i]
                                     
-                                    bbox = [float(box[j]) for j in range(4)]
+                                    # Debug bbox format to catch tuple error
+                                    logger.debug(f"Box type: {type(box)}, Box value: {box}")
+                                    try:
+                                        if hasattr(box, 'tolist'):
+                                            bbox = box.tolist()[:4]
+                                        elif isinstance(box, (list, tuple)):
+                                            bbox = [float(box[j]) for j in range(min(4, len(box)))]
+                                        else:
+                                            logger.warning(f"Unexpected box format: {type(box)} - {box}")
+                                            continue
+                                    except Exception as e:
+                                        logger.error(f"Error processing box {box}: {e}")
+                                        continue
                                     confidence = float(conf)
+                                    
+                                    # Log high-confidence detections with spatial analysis  
+                                    if confidence >= 0.3 and crop_regions is not None and len(crop_regions) > 0:
+                                        max_overlap = 0.0
+                                        for crop_bbox in crop_regions:
+                                            overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                            max_overlap = max(max_overlap, overlap)
+                                        
+                                        logger.info(f"🔍 {variant_name.upper()} high-conf: conf={confidence:.3f}, bbox={bbox}, max_overlap={max_overlap:.3f} at {timestamp_seconds:.1f}s")
+                                        if len(crop_regions) <= 3:  # Show details for first few crop regions
+                                            for crop_bbox in crop_regions:
+                                                overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                                logger.info(f"  📏 Crop {crop_bbox} vs {variant_name.upper()} {bbox} = overlap {overlap:.3f}")
                                     
                                     if confidence >= 0.05:
                                         det = {
                                             'confidence': confidence,
                                             'bbox': bbox,
-                                            'source': 'megadetector_v6',
+                                            'source': f'megadetector_{variant_name}',
                                             'class': int(class_ids[i]) if class_ids is not None else 1
                                         }
                                         detections.append(det)
                                         md_v6_detections += 1
-                                        logger.debug(f"MegaDetector v6: conf={det['confidence']:.4f}, bbox={det['bbox']}")
+                                        logger.debug(f"MegaDetector v6: conf={confidence:.4f}, bbox={bbox}")
                             except Exception as e:
                                 logger.error(f"Error parsing MegaDetector v6 supervision format: {e}")
                         else:
                             logger.debug(f"MegaDetector v6 no detections found in result dict")
                 
-                logger.info(f"✅ MegaDetector v6: {md_v6_detections} detections found")
-                analysis_logger.info(f"MegaDetector v6 found {md_v6_detections} detections")
-            except Exception as e:
-                import traceback
-                logger.error(f"❌ MegaDetector v6 failed: {e}")
-                logger.debug(f"MegaDetector v6 traceback: {traceback.format_exc()}")
+                    logger.info(f"✅ MegaDetector v6 ({variant_name}): {md_v6_detections} detections found")
+                    analysis_logger.info(f"MegaDetector v6 ({variant_name}) found {md_v6_detections} detections")
+                    step_counter += 1
+                except Exception as e:
+                    import traceback
+                    analysis_logger.error(f"{variant_name} failed: {e}")
+                    logger.debug(f"MegaDetector v6 ({variant_name}) traceback: {traceback.format_exc()}")
         
-        # 5. DeepFaune detector (PyTorch-Wildlife)
+        # 4. DeepFaune detector (PyTorch-Wildlife)
         if self.deepfaune_detector is not None:
             try:
-                analysis_logger.info("ENSEMBLE_STEP_5: Running DeepFaune detector (PyTorch-Wildlife)")
+                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running DeepFaune detector (PyTorch-Wildlife)")
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 analysis_logger.info(f"DeepFaune input: numpy array {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
                 
@@ -566,7 +811,19 @@ class MLDetectionEnsemble:
                                     box = boxes[i]
                                     conf = confidences[i]
                                     
-                                    bbox = [float(box[j]) for j in range(4)]
+                                    # Debug bbox format to catch tuple error
+                                    logger.debug(f"Box type: {type(box)}, Box value: {box}")
+                                    try:
+                                        if hasattr(box, 'tolist'):
+                                            bbox = box.tolist()[:4]
+                                        elif isinstance(box, (list, tuple)):
+                                            bbox = [float(box[j]) for j in range(min(4, len(box)))]
+                                        else:
+                                            logger.warning(f"Unexpected box format: {type(box)} - {box}")
+                                            continue
+                                    except Exception as e:
+                                        logger.error(f"Error processing box {box}: {e}")
+                                        continue
                                     confidence = float(conf)
                                     
                                     if confidence >= 0.05:
@@ -586,7 +843,62 @@ class MLDetectionEnsemble:
             except Exception as e:
                 analysis_logger.error(f"DeepFaune detector failed: {e}")
         
+        # Check for correlations between MegaDetector extended classes and YOLO detections
+        self._check_extended_class_correlations(detections, timestamp_seconds)
+        
         return detections
+    
+    def _check_extended_class_correlations(self, detections: List[Dict], timestamp: float) -> None:
+        """Check for correlations between MegaDetector extended classes and YOLO detections."""
+        megadetector_extended = [d for d in detections if d.get('source') == 'megadetector_v6' and d.get('raw_class_id')]
+        yolo_detections = [d for d in detections if 'yolo' in d.get('source', '').lower()]
+        
+        if not megadetector_extended or not yolo_detections:
+            return
+            
+        # Check for bbox overlaps (IoU > 0.3 indicates correlation)
+        for md_det in megadetector_extended:
+            md_bbox = md_det['bbox']
+            md_class = md_det.get('class', 'unknown')
+            md_conf = md_det['confidence']
+            
+            for yolo_det in yolo_detections:
+                yolo_bbox = yolo_det['bbox']
+                yolo_source = yolo_det['source']
+                yolo_conf = yolo_det['confidence']
+                
+                iou = self._calculate_iou(md_bbox, yolo_bbox)
+                if iou > 0.3:  # Significant overlap
+                    logger.warning(f"🚨🚨🚨 CORRELATION DETECTED 🚨🚨🚨")
+                    logger.warning(f"⚡ MegaDetector extended class {md_class} (conf={md_conf:.3f}) correlates with {yolo_source} (conf={yolo_conf:.3f})")
+                    logger.warning(f"📍 IoU={iou:.3f}, timestamp={timestamp:.2f}s")
+                    logger.warning(f"📊 MegaDetector bbox: {[round(x,1) for x in md_bbox]}")
+                    logger.warning(f"📊 YOLO bbox: {[round(x,1) for x in yolo_bbox]}")
+                    logger.warning(f"🔥 CONSIDER ADDING CLASS {md_class} TO WHITELIST!")
+                    logger.warning(f"🚨🚨🚨 END CORRELATION 🚨🚨🚨")
+    
+    def _calculate_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
+        """Calculate Intersection over Union (IoU) between two bounding boxes."""
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # Calculate intersection area
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+        
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+            
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        
+        # Calculate union area
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+        
+        return intersection / union if union > 0 else 0.0
     
     def run_enhanced_preprocessing(
         self, 

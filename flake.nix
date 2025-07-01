@@ -139,18 +139,6 @@
               fi
             '')
             
-            (pkgs.writeShellScriptBin "process-ff" ''
-              echo "🎬 Starting wildlife video processing (Full Frame)..."
-              echo "📊 Mode: Full frame ML ensemble processing"
-              "$PWD/process_fullframe.py" "$@"
-            '')
-            
-            (pkgs.writeShellScriptBin "process-md" ''
-              echo "🎬 Starting wildlife video processing (Motion Detection)..."
-              echo "📊 Mode: Motion detection + crop-based ML processing"
-              "$PWD/process_motiondetection.py" "$@"
-            '')
-            
             (pkgs.writeShellScriptBin "process" ''
               "$PWD/process.py" "$@"
             '')
@@ -171,15 +159,12 @@
             echo "  check - Check daemon status"
             echo ""
             echo "🎬 Video Processing Commands:"
-            echo "  process    - Unified processor with strategy selection"
-            echo "  process-ff - Full frame ML ensemble processing"
-            echo "  process-md - Motion detection + crop processing"
+            echo "  process - Next-generation 4-step pipeline processor"
             echo ""
             echo "💡 Usage examples:"
-            echo "  process -s ff -v 7 8 9        # Full frame strategy"
-            echo "  process -s md -v 7 8 9        # Motion detection strategy"
-            echo "  process-ff --videos 7 8 9     # Direct full frame processing"
-            echo "  process-md --videos IMG_0015.MP4  # Direct motion detection processing"
+            echo "  process -v 7 8 9              # Process specific videos"
+            echo "  process                       # Process all unprocessed videos"
+            echo "  process -v IMG_0011.MP4       # Process by filename"
           '';
         };
       });
