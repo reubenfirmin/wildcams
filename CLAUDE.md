@@ -6,7 +6,6 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 ## TODO list
 * Verify basic pipeline
 * Test yolov10, yoloe11
-* Add rt-detr (/rt-detr v2) and test as part of ensemble
 * Perform refactoring (refactoring_plan.md)
 * Tackle clustering
 * Fix MDV6-yolov10-e tuple error in crop processing
@@ -22,7 +21,7 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 2. **Processing System**:
    - **`process.py`** - Next-generation 4-step pipeline processor (primary)
    - **`video_processor_base.py`** - Shared base class with common functionality and CLI management
-   - **`ml_detection.py`** - Shared 4-model ML ensemble with RT-DETR handling
+   - **`ml_detection.py`** - Shared 3-model ML ensemble
 3. **Nix Development Environment** (`flake.nix`) - Reproducible development setup with uv Python package manager
 
 ### Next-Generation 4-Step Pipeline Architecture
@@ -44,26 +43,43 @@ The current production system uses a sophisticated 4-step pipeline optimized for
 
 #### **Step 3: Crop-Based ML Analysis (YOLO + MegaDetector YOLO Only)**
 - **Crop-Only Ensemble**: YOLO (v8x, v8m) + MegaDetector YOLO variant (yolov10-e)
-- **RT-DETR Exclusion**: RT-DETR models excluded from crop analysis (requires full-frame context)
+- **RT-DETR Exclusion**: All RT-DETR models excluded from crop analysis (requires full-frame context)
 - **Sampling Strategy**: Representative crops sampled from each temporal track (max 5 per track)
 - **Detailed Scoring**: Track summaries with max/avg confidence, detection counts, duration
 
 #### **Step 4: Full-Frame Validation with Weighted Scoring**
-- **Full Ensemble**: All models including RT-DETR run on complete frames
+- **Full Ensemble**: All models including Ultralytics RT-DETR run on complete frames
 - **Frame Selection**: Temporal spread + highest confidence frames from top crop tracks
 - **Weighted Combination**: `crop_weight * crop_score + fullframe_weight * full_frame_score`
+- **Spatial Correlation**: RT-DETR and other full-frame detections analyzed for overlap with crop regions
 - **Final Validation**: Combined score threshold determines animal presence
 
 ### Four-Model ML Ensemble (Default)
 1. **YOLOv8x** (primary - highest accuracy general detection)
 2. **YOLOv8m** (medium model - balance of speed and accuracy)  
-3. **MegaDetector v6 YOLOv10-e** (wildlife-specific, crop-compatible)
-4. **MegaDetector v6 RT-DETR-c** (highest accuracy, full-frame only)
+3. **MegaDetector v6 YOLOv10-e** (wildlife-specific)
+4. **RT-DETR-L** (Ultralytics Transformer-based, full-frame only)
 
 **Additional Available Models**:
 - **YOLOv10**: n/s/m/b/l/x variants (end-to-end optimized, no NMS)
 - **YOLOe11**: n/s/m/l/x variants (newer efficient architecture)
+- **RT-DETR**: l/x variants (Transformer-based, full-frame only)
 - **MegaDetector v6**: YOLOv9-c/e, YOLOv10-c/e variants
+
+### RT-DETR Technical Details
+
+**Architecture**: Vision Transformer-based real-time object detector with hybrid encoder
+**Key Features**:
+- **Global Context Processing**: Transformer architecture for comprehensive spatial understanding
+- **Multi-scale Feature Fusion**: Efficient hybrid encoder with cross-scale fusion capabilities  
+- **IoU-aware Query Selection**: Focuses on most relevant objects for improved accuracy
+- **End-to-End Detection**: No NMS required, reducing post-processing overhead
+- **Full-Frame Requirement**: Requires complete image context for optimal performance
+
+**Integration**: 
+- **Step 3 Exclusion**: Skipped in crop analysis due to global context requirements
+- **Step 4 Only**: Used exclusively in full-frame validation for maximum accuracy
+- **Spatial Overlap**: Detections analyzed for spatial correlation with crop regions
 
 ### MegaDetector v6 Technical Details
 
@@ -86,7 +102,9 @@ The current production system uses a sophisticated 4-step pipeline optimized for
 **Limitations**:
 - **Time-Lapse Performance**: Poor accuracy (≤61.6%) on time-lapse vs. motion-triggered images
 - **Class Restriction**: Limited to 3 classes vs. 80+ in COCO-trained models
-- **Extended Classes**: Some models output non-standard class IDs (102, 147, 166, 197, 278)
+- **Extended Classes**: Some models output non-standard class IDs outside the standard mapping:
+  - **Standard Classes**: 0=animal, 1=person, 2=vehicle
+  - **Unknown Classes**: 102, 147, 166, 178, 197, 250, 252, 278 (UNKNOWN classes not in standard MegaDetector mapping)
 
 **Current Integration**: Uses identical YOLO/RT-DETR architectures with wildlife-specific pre-trained weights
 
@@ -181,10 +199,10 @@ process --max-validation-frames 3 --crop-weight 0.8          # Prioritize crop a
 process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 
 # Available MegaDetector variants (-m):
-# MDV6-yolov9-c, MDV6-yolov9-e, MDV6-yolov10-c, MDV6-yolov10-e, MDV6-rtdetr-c
+# MDV6-yolov9-c, MDV6-yolov9-e, MDV6-yolov10-c, MDV6-yolov10-e
 
 # Available ensemble models (-e):
-# yolov8x, yolov8m, yolov8n, yolov10n, yolov10s, yolov10m, yolov10b, yolov10l, yolov10x, yoloe11n, yoloe11s, yoloe11m, yoloe11l, yoloe11x, megadetector_v6 (comma-separated)
+# yolov8x, yolov8m, yolov8n, yolov10n, yolov10s, yolov10m, yolov10b, yolov10l, yolov10x, yoloe11n, yoloe11s, yoloe11m, yoloe11l, yoloe11x, rtdetr-l, rtdetr-x, megadetector_v6 (comma-separated)
 
 # Next-Generation Parameters:
 # --conf                          Detection confidence threshold (0.0-1.0, default: 0.1)
@@ -289,7 +307,10 @@ wildcams/
 ## Known Issues
 - Videos 1-6: False positives (filtered by validation system)
 - Videos 13-19: Camera handling (detected and filtered in Step 2)
-- MegaDetector v6: Extended class IDs (102, 147, 166, 197, 278) logged for analysis
+- MegaDetector v6: Extended class IDs are UNKNOWN classes outside standard mapping:
+  - Standard classes: 0=animal, 1=person, 2=vehicle
+  - Unknown classes: 102, 147, 166, 178, 197, 250, 252, 278 (not in standard MegaDetector mapping)
+- RT-DETR coordinate corruption: Zero Y-coordinates requiring investigation
 
 ## Validation Results
 **Tested on Costa Rica jungle footage**:

@@ -49,7 +49,7 @@ def calculate_bbox_overlap(bbox1, bbox2):
     
     Args:
         bbox1: [x1, y1, x2, y2] - reference bbox (crop region)
-        bbox2: [x1, y1, x2, y2] - detection bbox (RT-DETR detection)
+        bbox2: [x1, y1, x2, y2] - detection bbox
     
     Returns:
         float: Overlap percentage (0.0 to 1.0) of bbox2 area that overlaps with bbox1
@@ -89,6 +89,9 @@ class MLDetectionEnsemble:
         # Unified model registry - all YOLO-compatible models
         self.yolo_detectors = {}  # Will store all YOLO models (v8, v10, v12, etc.)
         
+        # Model storage for RT-DETR models (full-frame only)
+        self.rtdetr_models = {}  # Will store RT-DETR models
+        
         # Model storage for multiple MegaDetector variants
         self.megadetector_variants = {}  # Will store multiple MD models
         
@@ -96,7 +99,8 @@ class MLDetectionEnsemble:
         self.model_thresholds = {
             'yolov8x': 0.05,           # Primary YOLO model
             'yolov8m': 0.08,           # Medium YOLO model
-            'MDV6-rtdetr-c': 0.1,      # RT-DETR variant (highest accuracy)
+            'rtdetr-l': 0.1,           # RT-DETR large (full-frame only)
+            'rtdetr-x': 0.1,           # RT-DETR extra large (full-frame only)
             'MDV6-yolov9-e': 0.1,      # YOLOv9 variant (balanced)
             'MDV6-yolov9-c': 0.1,      # YOLOv9 compact
             'MDV6-yolov10-e': 0.1,     # YOLOv10 variants
@@ -154,8 +158,24 @@ class MLDetectionEnsemble:
                 else:
                     logger.info(f"⏭️ Skipping {variant.upper()} (not in ensemble configuration)")
             
-            # Load multiple MegaDetector variants
-            megadetector_variants_in_ensemble = [model for model in self.ensemble_models if model.startswith('MDV6-')]
+            # Load RT-DETR models (full-frame only)
+            rtdetr_variants = ['rtdetr-l', 'rtdetr-x']
+            
+            for variant in rtdetr_variants:
+                if variant in self.ensemble_models:
+                    try:
+                        logger.info(f"🔬 Loading RT-DETR model: {variant}")
+                        from ultralytics import RTDETR
+                        self.rtdetr_models[variant] = RTDETR(f'{variant}.pt')
+                        logger.info(f"✅ {variant.upper()} RT-DETR loaded successfully")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to load RT-DETR {variant}: {e}")
+                        self.rtdetr_models[variant] = None
+                else:
+                    logger.info(f"⏭️ Skipping {variant.upper()} RT-DETR (not in ensemble configuration)")
+            
+            # Load multiple MegaDetector variants (excluding RT-DETR)
+            megadetector_variants_in_ensemble = [model for model in self.ensemble_models if model.startswith('MDV6-') and 'rtdetr' not in model.lower()]
             
             if megadetector_variants_in_ensemble and PYTORCH_WILDLIFE_AVAILABLE:
                 for variant in megadetector_variants_in_ensemble:
@@ -365,8 +385,8 @@ class MLDetectionEnsemble:
         
         step_counter = 1
         
-        # Run all YOLO models from unified registry
-        yolo_models_in_ensemble = [model for model in self.ensemble_models if not model.startswith('MDV6-')]
+        # Run all YOLO models from unified registry (excluding RT-DETR which needs full-frame)
+        yolo_models_in_ensemble = [model for model in self.ensemble_models if not model.startswith('MDV6-') and not model.startswith('rtdetr-')]
         
         for model_name in yolo_models_in_ensemble:
             detector = self.yolo_detectors.get(model_name)
@@ -388,7 +408,7 @@ class MLDetectionEnsemble:
                                     overlap = calculate_bbox_overlap(crop_bbox, bbox)
                                     max_overlap = max(max_overlap, overlap)
                                 
-                                logger.info(f"🔍 {model_name.upper()} high-conf: conf={confidence:.3f}, bbox={bbox}, max_overlap={max_overlap:.3f} at {timestamp_seconds:.1f}s")
+                                logger.info(f"🖼️ {timestamp_seconds:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {model_name.upper()} | FULLFRAME_DETECT | overlap={max_overlap:.3f}")
                                 if len(crop_regions) <= 3:  # Show details for first few crop regions
                                     for crop_bbox in crop_regions:
                                         overlap = calculate_bbox_overlap(crop_bbox, bbox)
@@ -413,33 +433,75 @@ class MLDetectionEnsemble:
             else:
                 logger.warning(f"⚠️ {model_name.upper()} detector not loaded")
         
-        # 3. MegaDetector v6 variants (PyTorch-Wildlife)
+        # 3. RT-DETR models (full-frame only)
+        for model_name, rtdetr_model in self.rtdetr_models.items():
+            if rtdetr_model is not None:
+                try:
+                    analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running {model_name.upper()} RT-DETR model with conf={self.confidence_threshold}")
+                    logger.info(f"🔬 Running {model_name.upper()} RT-DETR detection...")
+                    
+                    # RT-DETR requires full frame context - skip if not available
+                    if full_frame is not None:
+                        input_frame = full_frame
+                        logger.info(f"🖼️ Using full frame for RT-DETR {model_name}: {input_frame.shape}")
+                    else:
+                        logger.info(f"⏭️ Skipping RT-DETR {model_name} - no full frame available (RT-DETR requires full frames)")
+                        continue
+                    
+                    results = rtdetr_model(input_frame, conf=self.confidence_threshold, verbose=False)
+                    model_detections = 0
+                    for result in results:
+                        for box in result.boxes:
+                            confidence = float(box.conf)
+                            bbox = box.xyxy.tolist()[0]
+                            
+                            # Log high-confidence RT-DETR detections with spatial analysis
+                            if confidence >= 0.3 and crop_regions is not None and len(crop_regions) > 0:
+                                max_overlap = 0.0
+                                for crop_bbox in crop_regions:
+                                    overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                    max_overlap = max(max_overlap, overlap)
+                                
+                                logger.info(f"🔬 {timestamp_seconds:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {model_name.upper()}-RTDETR | FULLFRAME_DETECT | overlap={max_overlap:.3f}")
+                                if len(crop_regions) <= 3:  # Show details for first few crop regions
+                                    for crop_bbox in crop_regions:
+                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                        logger.info(f"  📏 Crop {crop_bbox} vs {model_name.upper()} RT-DETR {bbox} = overlap {overlap:.3f}")
+                            
+                            detection = {
+                                'confidence': confidence,
+                                'bbox': bbox,
+                                'source': f'rtdetr_{model_name}',
+                                'class': 'animal'
+                            }
+                            detections.append(detection)
+                            model_detections += 1
+                    
+                    logger.info(f"✅ {model_name.upper()} RT-DETR: {model_detections} detections found")
+                    step_counter += 1
+                    
+                except Exception as e:
+                    analysis_logger.error(f"{model_name.upper()} RT-DETR model failed: {e}")
+                    logger.error(f"❌ {model_name.upper()} RT-DETR failed: {e}")
+            else:
+                logger.warning(f"⚠️ {model_name.upper()} RT-DETR detector not loaded")
+        
+        # 4. MegaDetector v6 variants (PyTorch-Wildlife)
         for variant_name, md_model in self.megadetector_variants.items():
-            if md_model is not None:
+            if md_model is not None and 'rtdetr' not in variant_name.lower():
                 try:
                     analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector v6 variant {variant_name}")
                     logger.info(f"🔍 Running MegaDetector v6 ({variant_name})...")
                     
-                    # RT-DETR needs full frame context, skip if only crop available
-                    if 'rtdetr' in variant_name.lower():
-                        if full_frame is not None:
-                            input_frame = full_frame
-                            logger.info(f"🖼️ Using full frame for RT-DETR: {input_frame.shape}")
-                        else:
-                            logger.info(f"⏭️ Skipping RT-DETR {variant_name} - no full frame available (crop-only context)")
-                            continue
+                    # ALL Step 4 models must use full frame context
+                    if full_frame is not None:
+                        input_frame = full_frame
+                        logger.info(f"🖼️ Using full frame for {variant_name}: {input_frame.shape}")
                     else:
-                        input_frame = frame
-                        logger.info(f"🔲 Using crop for {variant_name}: {input_frame.shape}")
+                        logger.info(f"⏭️ Skipping {variant_name} - no full frame available (Step 4 requires full frames)")
+                        continue
                     
                     rgb_frame = cv2.cvtColor(input_frame, cv2.COLOR_BGR2RGB)
-                    analysis_logger.info(f"MegaDetector v6 input: numpy array {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
-                    
-                    # Debug RT-DETR input frame
-                    if 'rtdetr' in variant_name.lower():
-                        logger.info(f"🔍 RT-DETR input frame shape: {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
-                        logger.info(f"🔍 RT-DETR input frame range: min={rgb_frame.min()}, max={rgb_frame.max()}")
-                        logger.info(f"🔍 RT-DETR model threshold: {self.model_thresholds.get(variant_name, 0.1)}")
                     
                     try:
                         results = md_model.single_image_detection(
@@ -471,7 +533,6 @@ class MLDetectionEnsemble:
                         results = {'detections': None}
                 
                     md_v6_detections = 0
-                    analysis_logger.info(f"MegaDetector v6 result type: {type(results)}")
                 
                     if results is not None and isinstance(results, dict):
                         detections_obj = results.get('detections', None)
@@ -484,163 +545,38 @@ class MLDetectionEnsemble:
                                 try:
                                     boxes = detections_obj.boxes
                                     
-                                    # Debug: examine the raw box structure for RT-DETR
-                                    if 'rtdetr' in variant_name.lower():
-                                        logger.info(f"🔍 RT-DETR boxes object: {type(boxes)}")
-                                        if hasattr(boxes, 'data'):
-                                            raw_data = boxes.data.cpu().numpy() if hasattr(boxes.data, 'cpu') else boxes.data
-                                            logger.info(f"🔍 RT-DETR boxes.data shape: {raw_data.shape if hasattr(raw_data, 'shape') else 'no shape'}")
-                                            if hasattr(raw_data, 'shape') and len(raw_data.shape) >= 2 and raw_data.shape[0] > 0:
-                                                logger.info(f"🔍 RT-DETR raw data tensor (first detection): {raw_data[0]}")
-                                                # Check if this is actually CXCYWH format that needs conversion
-                                                if raw_data.shape[1] >= 4:
-                                                    cx, cy, w, h = raw_data[0][:4]
-                                                    x1_calc = cx - w/2
-                                                    y1_calc = cy - h/2  
-                                                    x2_calc = cx + w/2
-                                                    y2_calc = cy + h/2
-                                                    logger.info(f"🔍 RT-DETR CXCYWH interpretation: [{cx:.6f},{cy:.6f},{w:.6f},{h:.6f}] → [{x1_calc:.6f},{y1_calc:.6f},{x2_calc:.6f},{y2_calc:.6f}]")
-                                        if hasattr(boxes, 'xyxy'):
-                                            xyxy_data = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
-                                            logger.info(f"🔍 RT-DETR boxes.xyxy shape: {xyxy_data.shape if hasattr(xyxy_data, 'shape') else 'no shape'}")
-                                            if hasattr(xyxy_data, 'shape') and len(xyxy_data.shape) >= 2 and xyxy_data.shape[0] > 0:
-                                                logger.info(f"🔍 RT-DETR boxes.xyxy (first detection): {xyxy_data[0]}")
-                                        if hasattr(boxes, 'xywh'):
-                                            xywh_data = boxes.xywh.cpu().numpy() if hasattr(boxes.xywh, 'cpu') else boxes.xywh  
-                                            logger.info(f"🔍 RT-DETR boxes.xywh shape: {xywh_data.shape if hasattr(xywh_data, 'shape') else 'no shape'}")
-                                            if hasattr(xywh_data, 'shape') and len(xywh_data.shape) >= 2 and xywh_data.shape[0] > 0:
-                                                logger.info(f"🔍 RT-DETR boxes.xywh (first detection): {xywh_data[0]}")
                                     
-                                    # Try multiple coordinate formats for RT-DETR compatibility
-                                    coords_extracted = False
-                                    
+                                    # Standard coordinate extraction for YOLO-based MegaDetector models
                                     if hasattr(boxes, 'xyxy') and hasattr(boxes, 'conf') and hasattr(boxes, 'cls'):
                                         xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
                                         confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
                                         cls_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
-                                        coords_extracted = True
-                                        
-                                        if 'rtdetr' in variant_name.lower():
-                                            logger.info(f"🔍 RT-DETR extracted xyxy coords: {xyxy[:3] if len(xyxy) > 0 else 'empty'}")
-                                            logger.info(f"🔍 RT-DETR extracted confs: {confs[:3] if len(confs) > 0 else 'empty'}")
-                                            logger.info(f"🔍 RT-DETR extracted cls_ids: {cls_ids[:3] if len(cls_ids) > 0 else 'empty'}")
-                                            if len(xyxy) > 0:
-                                                for i, coord in enumerate(xyxy[:3]):
-                                                    logger.info(f"🔍 RT-DETR detection {i}: [{coord[0]:.6f},{coord[1]:.6f},{coord[2]:.6f},{coord[3]:.6f}] conf={confs[i]:.3f} cls={cls_ids[i]}")
-                                    
-                                    elif hasattr(boxes, 'xywh') and hasattr(boxes, 'conf') and hasattr(boxes, 'cls'):
-                                        # RT-DETR might output in xywh format - convert to xyxy
-                                        xywh = boxes.xywh.cpu().numpy() if hasattr(boxes.xywh, 'cpu') else boxes.xywh
-                                        confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
-                                        cls_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
-                                        
-                                        # Convert xywh to xyxy format
-                                        xyxy = []
-                                        for i in range(len(xywh)):
-                                            cx, cy, w, h = xywh[i]
-                                            x1 = cx - w/2
-                                            y1 = cy - h/2
-                                            x2 = cx + w/2
-                                            y2 = cy + h/2
-                                            xyxy.append([x1, y1, x2, y2])
-                                        xyxy = np.array(xyxy)
-                                        coords_extracted = True
-                                        
-                                        logger.info(f"🔄 RT-DETR converted xywh→xyxy: {xyxy[:3] if len(xyxy) > 0 else 'empty'}")
-                                    
-                                    elif 'rtdetr' in variant_name.lower() and hasattr(boxes, 'data'):
-                                        # RT-DETR coordinate fix: handle CXCYWH format from raw tensor
-                                        # RT-DETR often outputs in [cx, cy, w, h, conf, cls] format
-                                        logger.info("🔄 RT-DETR coordinate fix: checking CXCYWH format in raw data tensor")
-                                        raw_data = boxes.data.cpu().numpy() if hasattr(boxes.data, 'cpu') else boxes.data
-                                        
-                                        if len(raw_data.shape) >= 2 and raw_data.shape[1] >= 6:
-                                            # Extract raw values
-                                            cx_values = raw_data[:, 0]  # Center X
-                                            cy_values = raw_data[:, 1]  # Center Y  
-                                            w_values = raw_data[:, 2]   # Width
-                                            h_values = raw_data[:, 3]   # Height
-                                            confs = raw_data[:, 4]      # Confidence
-                                            cls_ids = raw_data[:, 5]    # Class ID
-                                            
-                                            # Check if this looks like CXCYWH format (non-zero cy values)
-                                            if len(cy_values) > 0 and any(cy > 0.01 for cy in cy_values):
-                                                # Convert CXCYWH to XYXY manually
-                                                xyxy = []
-                                                for i in range(len(raw_data)):
-                                                    cx, cy, w, h = cx_values[i], cy_values[i], w_values[i], h_values[i]
-                                                    x1 = cx - w/2
-                                                    y1 = cy - h/2
-                                                    x2 = cx + w/2
-                                                    y2 = cy + h/2
-                                                    xyxy.append([x1, y1, x2, y2])
-                                                xyxy = np.array(xyxy)
-                                                coords_extracted = True
-                                                
-                                                logger.info(f"🔧 RT-DETR CXCYWH→XYXY conversion successful: {len(xyxy)} detections")
-                                                if len(xyxy) > 0:
-                                                    logger.info(f"🔍 RT-DETR converted coordinates (first): [{xyxy[0][0]:.6f},{xyxy[0][1]:.6f},{xyxy[0][2]:.6f},{xyxy[0][3]:.6f}] conf={confs[0]:.3f}")
-                                            else:
-                                                # Fallback to raw XYXY extraction
-                                                xyxy = raw_data[:, :4]  # First 4 columns: x1, y1, x2, y2
-                                                coords_extracted = True
-                                                logger.info(f"🔄 RT-DETR using raw XYXY format: {xyxy[:3] if len(xyxy) > 0 else 'empty'}")
-                                    
-                                    if coords_extracted:
                                         
                                         # Collect all detections for summary logging
                                         animals, persons, unknowns = [], [], []
                                         
                                         for i in range(len(xyxy)):
-                                            # Fix coordinate handling - xyxy should be [x1, y1, x2, y2]
                                             x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
                                             confidence = float(confs[i])
                                             class_id = int(cls_ids[i])
                                             
-                                            # Debug: log raw coordinates to understand coordinate system
-                                            if confidence >= 0.8 and 'rtdetr' in variant_name.lower():
-                                                logger.info(f"🔍 RT-DETR raw coords: [{x1:.3f},{y1:.3f},{x2:.3f},{y2:.3f}], frame_shape={frame.shape}, conf={confidence:.3f}")
-                                            
-                                            # RT-DETR coordinate repair: fix zero Y-coordinates
-                                            if 'rtdetr' in variant_name.lower() and y1 == 0.0 and y2 == 0.0:
-                                                # Estimate reasonable Y-coordinates based on frame dimensions and X-coordinates
-                                                h, w = frame.shape[:2] if len(frame.shape) > 2 else (frame.shape[0], frame.shape[1])
-                                                x_width = abs(x2 - x1)
+                                            # Standard MegaDetector coordinate processing
+                                            if confidence >= 0.05 and x2 > x1 and y2 > y1:
+                                                h, w = input_frame.shape[:2] if len(input_frame.shape) > 2 else (input_frame.shape[0], input_frame.shape[1])
                                                 
-                                                # Assume detection is roughly square/rectangular with similar aspect ratio
-                                                estimated_height = min(x_width * 1.2, 0.3)  # Max 30% of frame height
-                                                y_center = 0.5  # Assume center of frame
-                                                y1 = max(0.0, y_center - estimated_height/2)
-                                                y2 = min(1.0, y_center + estimated_height/2)
-                                                
-                                                logger.info(f"🔧 RT-DETR coordinate repair: Y [{0.0:.3f},{0.0:.3f}] → [{y1:.3f},{y2:.3f}] (width={x_width:.3f}, est_height={estimated_height:.3f})")
-                                            
-                                            # Use MegaDetector with confidence threshold - RT-DETR with full frame has reliable coordinates
-                                            coord_valid = x2 > x1 and y2 > y1
-                                            if confidence >= 0.05 and (coord_valid or 'rtdetr' in variant_name.lower()):
-                                                # RT-DETR coordinates: convert to pixel coordinates if needed
-                                                h, w = frame.shape[:2] if len(frame.shape) > 2 else (frame.shape[0], frame.shape[1])
-                                                
-                                                # RT-DETR coordinate conversion: always convert normalized coordinates to pixels
-                                                if 'rtdetr' in variant_name.lower() or (x1 <= 1.0 and y1 <= 1.0 and x2 <= 1.0 and y2 <= 1.0 and x1 >= 0.0 and y1 >= 0.0):
-                                                    # Convert normalized coordinates to pixel coordinates (RT-DETR can have x>1.0)
+                                                # Convert normalized coordinates to pixels if needed
+                                                if x1 <= 1.0 and y1 <= 1.0 and x2 <= 1.0 and y2 <= 1.0 and x1 >= 0.0 and y1 >= 0.0:
                                                     x1_px, y1_px = x1 * w, y1 * h
                                                     x2_px, y2_px = x2 * w, y2 * h
                                                     bbox = [x1_px, y1_px, x2_px, y2_px]
-                                                    if 'rtdetr' in variant_name.lower() and confidence >= 0.8:
-                                                        logger.info(f"🔄 RT-DETR normalized→pixel: [{x1:.3f},{y1:.3f},{x2:.3f},{y2:.3f}] → [{x1_px:.1f},{y1_px:.1f},{x2_px:.1f},{y2_px:.1f}]")
-                                                elif x2 > x1 and y2 > y1:
-                                                    # Already pixel coordinates - use as-is
-                                                    bbox = [x1, y1, x2, y2]
                                                 else:
-                                                    # Invalid coordinates - use full frame as fallback
-                                                    bbox = [0, 0, w, h]
-                                                    logger.warning(f"⚠️ RT-DETR invalid coordinates [{x1:.3f},{y1:.3f},{x2:.3f},{y2:.3f}] - using full frame fallback")
+                                                    # Already pixel coordinates
+                                                    bbox = [x1, y1, x2, y2]
                                                 
-                                                # Categorize detections for summary
-                                                accepted_detection = False
+                                                # MegaDetector v6 Class IDs: 0=animal, 1=person, 2=vehicle
+                                                # Extended/Unknown classes are documented as UNKNOWN in CLAUDE.md
                                                 
-                                                if class_id == 0:  # 0=animal in standard MegaDetector
+                                                if class_id == 0:  # Only accept animal class
                                                     det = {
                                                         'confidence': confidence,
                                                         'bbox': bbox,
@@ -651,42 +587,16 @@ class MLDetectionEnsemble:
                                                     detections.append(det)
                                                     md_v6_detections += 1
                                                     animals.append((class_id, confidence))
-                                                    accepted_detection = True
+                                                    
+                                                    # Log with crop overlap analysis for Step 4 diagnosis
+                                                    if crop_regions is not None:
+                                                        max_crop_overlap = 0.0
+                                                        for crop_bbox in crop_regions:
+                                                            overlap = calculate_bbox_overlap(crop_bbox, bbox)
+                                                            max_crop_overlap = max(max_crop_overlap, overlap)
+                                                        logger.info(f"🦎 {timestamp_seconds:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {variant_name} | FULLFRAME_DETECT | overlap={max_crop_overlap:.3f}")
                                                 elif class_id == 1:
                                                     persons.append((class_id, confidence))
-                                                elif (confidence >= 0.8 and 'rtdetr' in variant_name.lower() and 
-                                                      crop_regions is not None):
-                                                    # Check spatial overlap with crop regions for high-confidence RT-DETR detections
-                                                    logger.info(f"🔍 RT-DETR checking {len(crop_regions)} crop regions for class_id={class_id}, conf={confidence:.3f}, bbox={bbox} at timestamp={timestamp_seconds:.1f}s")
-                                                    max_overlap = 0.0
-                                                    for crop_bbox in crop_regions[:3]:  # Show first 3 for debugging
-                                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
-                                                        max_overlap = max(max_overlap, overlap)
-                                                        logger.info(f"  📏 Crop {crop_bbox} vs RT-DETR {bbox} = overlap {overlap:.3f}")
-                                                    # Calculate max over all regions
-                                                    for crop_bbox in crop_regions[3:]:
-                                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
-                                                        max_overlap = max(max_overlap, overlap)
-                                                    
-                                                    if max_overlap >= accepted_rtdetr_overlap:
-                                                        # Accept high-confidence RT-DETR detection with sufficient spatial overlap
-                                                        det = {
-                                                            'confidence': confidence,
-                                                            'bbox': bbox,
-                                                            'source': f'megadetector_{variant_name}',
-                                                            'class': class_id,
-                                                            'raw_class_id': True,
-                                                            'extended_class': True,
-                                                            'spatial_overlap': max_overlap
-                                                        }
-                                                        detections.append(det)
-                                                        md_v6_detections += 1
-                                                        animals.append((class_id, confidence))
-                                                        accepted_detection = True
-                                                        logger.info(f"🔥 RT-DETR SPATIAL MATCH: class_id={class_id}, conf={confidence:.3f}, overlap={max_overlap:.3f}, bbox={bbox} at {timestamp_seconds:.1f}s")
-                                                    else:
-                                                        unknowns.append((class_id, confidence))
-                                                        logger.info(f"🔍 RT-DETR HIGH-CONF REJECTED: class_id={class_id}, conf={confidence:.3f}, max_overlap={max_overlap:.3f} < {accepted_rtdetr_overlap} at {timestamp_seconds:.1f}s")
                                                 else:
                                                     unknowns.append((class_id, confidence))
                                         

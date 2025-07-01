@@ -740,14 +740,11 @@ class NextGenVideoProcessor(VideoProcessorBase):
                         'frame_idx': frame_idx
                     }
                     detections.append(detection)
-                    # Log individual YOLO crop detection
-                    analysis_logger.info(f"{model_name} CROP: conf={conf:.3f}, bbox=[{xyxy[0]:.1f}, {xyxy[1]:.1f}, {xyxy[2]:.1f}, {xyxy[3]:.1f}] (track correlation analysis)")
+                    # Log individual YOLO crop detection with precise bbox
+                    analysis_logger.info(f"🔲 {timestamp:.1f}s | {xyxy[0]:.0f},{xyxy[1]:.0f},{xyxy[2]:.0f},{xyxy[3]:.0f} | {model_name} | CROP_DETECT | conf={conf:.3f}")
         
-        # Log summary for this model
-        if detections:
-            analysis_logger.info(f"✅ {model_name} CROP: {len(detections)} detections found")
-        else:
-            analysis_logger.info(f"✅ {model_name} CROP: 0 detections found")
+        # Log summary for this model - motion bbox and final count
+        analysis_logger.info(f"🔲 {timestamp:.1f}s | {motion_bbox[0]:.0f},{motion_bbox[1]:.0f},{motion_bbox[2]:.0f},{motion_bbox[3]:.0f} | {model_name} | CROP_RESULT | {len(detections)} detections")
         
         return detections
     
@@ -803,7 +800,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                             analysis_logger.warning(f"Unexpected bbox format from {model_name}: {type(bbox)} - {bbox}")
                             continue
                         # Log class correlation with motion tracks
-                        analysis_logger.info(f"MegaDetector {model_name}: class_id={class_id}, conf={conf:.3f} (track correlation analysis)")
+                        analysis_logger.info(f"🔲 {timestamp:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {model_name} | CROP_DETECT")
                         
                         detections.append({
                             'bbox': bbox,
@@ -860,6 +857,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
             full_frame_scores = []
             frames_processed = 0
             
+            # Initialize RT-DETR contribution tracking for this track
+            rtdetr_contributions = {}
+            
             for frame_idx in validation_frames:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
@@ -880,6 +880,21 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 if full_detections:
                     max_full_conf = max(det['confidence'] for det in full_detections)
                     full_frame_scores.append(max_full_conf)
+                    
+                    # Track RT-DETR contributions from Step 4 full-frame validation
+                    for det in full_detections:
+                        source = det.get('source', 'unknown')
+                        # Only track RT-DETR models (they have 'rtdetr' in their source name)
+                        if 'rtdetr' in source.lower():
+                            if source not in rtdetr_contributions:
+                                rtdetr_contributions[source] = {
+                                    'count': 0,
+                                    'max_conf': 0.0,
+                                    'total_conf': 0.0
+                                }
+                            rtdetr_contributions[source]['count'] += 1
+                            rtdetr_contributions[source]['max_conf'] = max(rtdetr_contributions[source]['max_conf'], det['confidence'])
+                            rtdetr_contributions[source]['total_conf'] += det['confidence']
                 else:
                     # Apply heavy penalty for frames where ensemble found nothing
                     # Each zero frame gets a large negative impact
@@ -926,6 +941,11 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 validation_passed = False
                 validation_reason = "no_frames_processed"
             
+            # Calculate average confidence for RT-DETR contributions
+            for source in rtdetr_contributions:
+                if rtdetr_contributions[source]['count'] > 0:
+                    rtdetr_contributions[source]['avg_conf'] = rtdetr_contributions[source]['total_conf'] / rtdetr_contributions[source]['count']
+            
             validation_result = {
                 'track_id': crop_track['track_id'],
                 'crop_score': crop_score,
@@ -936,7 +956,8 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 'validation_frames': len(validation_frames),
                 'duration_seconds': crop_track['duration_seconds'],
                 'best_detection': max(track_detections, key=lambda x: x['confidence']),
-                'validation_passed': validation_passed
+                'validation_passed': validation_passed,
+                'rtdetr_contributions': rtdetr_contributions  # Add RT-DETR tracking from Step 4
             }
             
             validated_results.append(validation_result)
@@ -1338,6 +1359,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
         best_sequence = max(final_validated_sequences, key=lambda s: s['combined_score'])
         best_detection = best_sequence['best_detection']
         
+        # Save crops for validated sequences
+        saved_crop_paths = self.save_validated_crops(video_path, final_validated_sequences)
+        
         analysis = {
             'video_path': str(video_path),
             'animals_detected': ['animal'],
@@ -1348,6 +1372,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
             'temporal_consistency_duration': best_sequence['duration_seconds'],
             'best_detection_frame': best_detection['frame_idx'],
             'best_detection_timestamp': best_detection['timestamp'],
+            'saved_crops': saved_crop_paths,
             'detection': {
                 'confidence': best_detection['confidence'],
                 'bbox': best_detection['bbox'],
@@ -1482,7 +1507,24 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 composite_score = composite_scores.get(video_name, 'N/A')
                 runtime = processing_times.get(video_name, 'N/A')
                 runtime_str = f"{runtime:.1f}s" if isinstance(runtime, (int, float)) else runtime
-                logger.info(f"  ✅ {video_name}: motion_score={composite_score}, conf={confidence:.3f}, combined={combined_score:.3f}, tracks={motion_tracks}, validated={validated_sequences}, runtime={runtime_str}")
+                
+                # Add time range information
+                best_timestamp = analysis['best_detection_timestamp']
+                duration = analysis['temporal_consistency_duration']
+                time_range = f"{best_timestamp:.1f}s"
+                if duration > 1.0:
+                    time_range = f"{best_timestamp:.1f}-{best_timestamp + duration:.1f}s"
+                
+                logger.info(f"  ✅ {video_name}: time_range={time_range}, conf={confidence:.3f}, combined={combined_score:.3f}, tracks={motion_tracks}, validated={validated_sequences}, runtime={runtime_str}")
+                
+                # Show saved crop paths
+                saved_crops = analysis.get('saved_crops', [])
+                if saved_crops:
+                    logger.info(f"     📷 Validated crops: {len(saved_crops)} saved")
+                    for crop_path in saved_crops:
+                        logger.info(f"       {crop_path}")
+                else:
+                    logger.info(f"     📷 No crops saved")
             logger.info("")
         
         # Log videos that had no animals (need to track these during processing)
@@ -1557,8 +1599,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     all_models_stats[model_name]['max_confidence'] = max(all_models_stats[model_name]['max_confidence'], stats['max_confidence'])
                     all_models_stats[model_name]['total_tracks'] += stats['contributing_tracks']
             
-            # Sort models by type (YOLO vs MegaDetector) and show statistics
-            yolo_models = {k: v for k, v in all_models_stats.items() if not k.startswith('MDV6-')}
+            # Sort models by type (YOLO, RT-DETR, MegaDetector) and show statistics
+            yolo_models = {k: v for k, v in all_models_stats.items() if not k.startswith('MDV6-') and not k.startswith('rtdetr_')}
+            rtdetr_models = {k: v for k, v in all_models_stats.items() if k.startswith('rtdetr_')}
             md_models = {k: v for k, v in all_models_stats.items() if k.startswith('MDV6-')}
             
             logger.info(f"  📊 ANALYSIS COVERS: {len(videos_with_ml_data)} videos with ML data ({len(videos_with_animals)} successful, {len(videos_with_ml_data) - len(videos_with_animals)} failed validation)")
@@ -1567,6 +1610,12 @@ class NextGenVideoProcessor(VideoProcessorBase):
             if yolo_models:
                 logger.info("  🎯 YOLO MODELS:")
                 for model_name, stats in sorted(yolo_models.items()):
+                    logger.info(f"    {model_name}: {stats['total_detections']} detections, {stats['videos_contributed']}/{len(videos_with_ml_data)} videos, max_conf={stats['max_confidence']:.3f}, tracks={stats['total_tracks']}")
+                logger.info("")
+            
+            if rtdetr_models:
+                logger.info("  🔬 RT-DETR MODELS:")
+                for model_name, stats in sorted(rtdetr_models.items()):
                     logger.info(f"    {model_name}: {stats['total_detections']} detections, {stats['videos_contributed']}/{len(videos_with_ml_data)} videos, max_conf={stats['max_confidence']:.3f}, tracks={stats['total_tracks']}")
                 logger.info("")
             
@@ -1670,7 +1719,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Write processed file with JSON data
         import json
         with open(processed_file, 'w') as f:
-            json.dump(processed_data, f, indent=2)
+            # Convert numpy types to JSON-serializable types
+            processed_data_clean = self._convert_for_json(processed_data)
+            json.dump(processed_data_clean, f, indent=2)
         
         analysis_logger.info(f"📝 Marked {video_path.name} as processed: {processed_file}")
     
@@ -1709,6 +1760,60 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 analysis_logger.info(f"🎯 Temporal track built: {len(track['frames'])} frames over {track['duration_seconds']:.2f}s")
         
         return temporal_tracks
+    
+    def save_validated_crops(self, video_path: Path, validated_sequences: List[Dict]) -> List[str]:
+        """Save crops from validated sequences where full-frame analysis confirmed detection."""
+        import cv2
+        
+        # Create crops directory
+        crops_dir = self.output_dir / 'validated_crops' / video_path.stem
+        crops_dir.mkdir(parents=True, exist_ok=True)
+        
+        saved_paths = []
+        
+        # Open video for crop extraction
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            analysis_logger.error(f"Failed to open video for crop extraction: {video_path}")
+            return saved_paths
+        
+        try:
+            for seq_idx, sequence in enumerate(validated_sequences):
+                # Get the best detection from this sequence for crop extraction
+                best_detection = sequence['best_detection']
+                frame_idx = best_detection['frame_idx']
+                bbox = best_detection['bbox']
+                timestamp = best_detection['timestamp']
+                
+                # Seek to the frame
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                
+                if ret:
+                    # Extract crop using bbox coordinates
+                    x1, y1, x2, y2 = map(int, bbox)
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+                    
+                    if x2 > x1 and y2 > y1:
+                        crop = frame[y1:y2, x1:x2]
+                        
+                        # Generate filename with timestamp and confidence
+                        confidence = best_detection['confidence']
+                        combined_score = sequence['combined_score']
+                        filename = f"seq{seq_idx}_t{timestamp:.1f}s_conf{confidence:.3f}_combined{combined_score:.3f}.jpg"
+                        crop_path = crops_dir / filename
+                        
+                        # Save crop
+                        cv2.imwrite(str(crop_path), crop)
+                        saved_paths.append(str(crop_path))
+                        
+                        analysis_logger.info(f"💾 Saved validated crop: {crop_path}")
+                
+        finally:
+            cap.release()
+        
+        return saved_paths
     
     def build_track_from_anchor(self, anchor_frame: int, all_detections_by_frame: Dict[int, List[Dict]], fps: float) -> Optional[Dict]:
         """Build bidirectional track from anchor point."""
