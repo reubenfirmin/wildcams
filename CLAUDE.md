@@ -236,6 +236,82 @@ process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 # --temporal-spread-seconds      Temporal spread for frame sampling (default: 2.0)
 ```
 
+## Scientific Logging Format
+
+The system produces structured scientific logs with three types of evaluation rows:
+
+### EVAL Rows (Model Evaluation)
+```
+EVAL | {video} | {timestamp} | {frame} | {track_id}
+{✅/❌} | {model} | {bbox} | {conf} | {overlap%} | {motion_bbox} | {score}
+```
+- **Header**: Video name, timestamp, frame number, track ID
+- **Rows**: One per model showing detection outcome
+- **✅**: Model detected animal with spatial overlap ≥ threshold
+- **❌**: Model found no detection or insufficient spatial overlap
+
+### ENSEMBLE Rows (Frame-Level Combination)
+```
+ENSEMBLE | {video} | {timestamp} | {frame} | {track_id}
+{✅/❌} | combined | valid_models={count} | total_score={sum} | valid_detections={count} | frame_score={avg}
+```
+- **Header**: Same context as EVAL
+- **Row**: Combined results from all models for this frame
+- **✅**: At least one model found spatially valid detection
+- **❌**: No models found spatially valid detections
+
+### TRACK Rows (Final Track Validation)
+```
+TRACK | {video} | {track_id}
+{✅/❌} | duration={s} | frames={count} | detections={count} | models_active={count} | summed_conf={total} | avg_conf={avg} | max_conf={max} | duration_norm={norm} | validated={bool}
+```
+- **Header**: Video name and track ID
+- **Row**: Final track validation decision
+- **✅**: Track passed validation (summed_conf ≥ confidence_threshold)
+- **❌**: Track failed validation
+
+### Key Metrics
+- **ensemble_score**: Confidence-weighted combination of all model outputs (0.0-1.0 scale)
+- **spatial_valid**: Detection bbox overlaps ≥ accepted_rtdetr_overlap with motion regions
+- **temporal_continuity**: Validated detections must be within max_skip_frames of each other
+- **models_active**: Number of models contributing spatially valid detections
+
+### Ensemble Scoring Theory
+
+The system uses **confidence-weighted ensemble scoring** that redistributes weights based on model performance while ensuring the maximum possible score is 1.0:
+
+#### Weight Redistribution Algorithm
+```python
+# Base weight for zero/low confidence models (configurable)
+base_weight = 0.1  # Minimum 10% influence per model
+
+# Confidence-based weight calculation
+for each model:
+    if confidence >= 0.8: weight = 1.0 + confidence    # High confidence boost
+    elif confidence >= 0.5: weight = 1.0 + (conf * 0.5) # Medium weight  
+    elif confidence >= 0.3: weight = 0.5 + (conf * 0.3) # Lower weight
+    else: weight = base_weight                           # Minimum weight
+
+# Normalize weights to sum to 1.0
+normalized_weights = weights / sum(weights)
+
+# Final ensemble score
+ensemble_score = sum(model_score * normalized_weight)
+```
+
+#### Key Properties
+- **Maximum Score**: Always ≤ 1.0 due to weight normalization
+- **Zero Model Penalty**: Models with no detections get minimal weight (10%) but still influence the score
+- **Confidence Amplification**: High-confidence models get disproportionately higher weights
+- **Robust Scoring**: Single strong detection doesn't dominate; multiple weak detections can outweigh one strong detection
+
+#### Example Calculation
+**Models**: yolo12x=0.0, yolo12m=0.0, MDV6=0.0, rtdetr=0.286@0.408conf
+**Weights**: 0.1, 0.1, 0.1, 0.622 → **Normalized**: 0.108, 0.108, 0.108, 0.675
+**Final Score**: 0.0×0.108 + 0.0×0.108 + 0.0×0.108 + 0.286×0.675 = **0.193**
+
+This approach prevents over-reliance on single models while maintaining sensitivity to ensemble consensus.
+
 ## File Structure
 ```
 wildcams/
@@ -259,27 +335,32 @@ wildcams/
 ```
 
 ## Current Status
-✅ **Next-Gen Pipeline**: 3-step architecture with direct motion-to-full-frame connection complete
-✅ **Crop Analysis Eliminated**: Removed problematic crop processing, no more motion blur issues
-✅ **Spatial Overlap Validation**: Full-frame detections must correlate with motion regions (30% overlap)
-✅ **RT-DETR Full Integration**: All models run on complete frames in optimal context
-✅ **Modular Architecture**: Clean separation between motion tracking and full-frame analysis
+✅ **3-Step Pipeline**: Motion detection → Camera handling filter → Full-frame ensemble analysis
+✅ **Scientific Logging**: Structured EVAL/ENSEMBLE/TRACK format with ✅/❌ outcome icons
+✅ **Confidence-Weighted Ensemble**: Weight redistribution based on model performance (0.0-1.0 scale)
+✅ **Spatial Overlap Validation**: Full-frame detections must correlate with motion regions
+✅ **Temporal Continuity**: Validated detections must be within max_skip_frames
+✅ **Individual Model Evaluation**: Each model logged separately with spatial validation results
 ✅ **Configurable Parameters**: All thresholds exposed via CLI with no hardcoded defaults
-✅ **Enhanced False Positive Filtering**: Spatial validation reduces spurious detections
-✅ **Logging Enhanced**: Detailed spatial overlap scores and model contribution tracking
 
 ## Recent Major Updates (2025-07-02)
 
-### Step 2 → Step 4 Direct Connection (Latest)
-- **Step 3 Elimination**: Completely removed crop-based analysis to eliminate blur/quality issues
-- **Direct Motion-to-Full-Frame**: Motion tracks connect directly to full-frame ensemble analysis
-- **Spatial Overlap Validation**: Requires 30% overlap between full-frame detections and motion regions
-- **Full Ensemble Integration**: All models (YOLO12x, YOLO12m, MDV6-yolov10-e, RT-DETR-L) run on complete frames
-- **False Positive Reduction**: Spatial correlation requirement filters detections unrelated to motion
+### Scientific Logging System (Latest)
+- **Structured Evaluation**: EVAL/ENSEMBLE/TRACK headers with ✅/❌ outcome icons
+- **Individual Model Logging**: Each model evaluation logged separately as it occurs
+- **Real-time Evaluation**: `for (model in ensemble) { evaluate(); log_result(); }`
+- **Ensemble Weight Display**: Shows confidence-weighted scoring calculations
 
-### Spatial Validation System (New)
-- **Motion Region Collection**: Captures spatial extent of movement from Step 1 temporal tracks
-- **Overlap Calculation**: IoU-based spatial correlation between detections and motion regions
+### Confidence-Weighted Ensemble Scoring (Latest)
+- **Weight Redistribution**: Normalizes model weights to sum to 1.0 while amplifying high-confidence models
+- **Zero Model Handling**: Models with no detections get minimal weight (10%) but still influence final score
+- **Confidence Tiering**: Different multipliers based on confidence thresholds (0.8+, 0.5+, 0.3+)
+- **Bounded Scoring**: Maximum ensemble score guaranteed ≤ 1.0
+
+### Temporal Continuity Validation (Latest)
+- **max_skip_frames Integration**: Validated detections must be within skip threshold
+- **Track Validation**: Requires confidence + minimum frames + temporal continuity
+- **Consistent Behavior**: Prevents sporadic detections from validating tracks
 - **Rejection Logging**: Clear logging of spatially invalid detections for debugging
 - **Validation Threshold**: Configurable 30% overlap requirement (--accepted-rtdetr-overlap)
 
@@ -483,6 +564,16 @@ BioCLIP should identify common Costa Rican fauna including:
 - **RT-DETR Context Handling**: Proper exclusion from crop analysis, inclusion in full-frame
 - **CLI Parameter Expansion**: All new validation parameters exposed and configurable
 - **Logging Enhancement**: Detailed debugging for scores, dimensions, and decision tracking
+
+### CRITICAL CODE QUALITY ISSUES (2025-07-02)
+**Problem**: Sloppy implementation and insufficient testing leading to multiple bugs:
+
+1. **Temporal Continuity Bug**: Fixed temporal validation logic but failed to test it properly
+2. **Missing Timestamp Bug**: Detection dictionaries missing timestamp field for validation
+3. **Parameter Logging Bug**: Claimed to add comprehensive parameter logging but logger wasn't initialized when it ran
+4. **Insufficient Desk Checking**: Multiple instances of implementing "fixes" without verifying they actually work
+
+**Lesson**: ALWAYS desk check your work. Run a small test case to verify fixes before claiming they work. No more "this should work" - verify it actually works with real data.
 
 ### Next Steps
 1. **Validation Testing**: Test 4-step pipeline on Videos 11 and 12

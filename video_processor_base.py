@@ -200,8 +200,10 @@ class VideoProcessorBase:
         # Temporal consistency arguments (for Next-Gen processor)
         parser.add_argument('--min-track-duration', type=float, default=0.1,
                            help='Minimum track duration in seconds (default: 0.1)')
-        parser.add_argument('--max-skip-frames', type=int, default=3,
-                           help='Maximum frames to skip in tracking (default: 3)')
+        parser.add_argument('--motion-tracking-gap-seconds', type=float, default=1.0,
+                           help='Maximum time gap for motion track linking in seconds (default: 1.0)')
+        parser.add_argument('--detection-validation-gap-seconds', type=float, default=0.3,
+                           help='Maximum time gap between ML detections for validation in seconds (default: 0.3)')
         parser.add_argument('--tracking-distance-threshold', type=float, default=150.0,
                            help='Maximum distance for tracking association in pixels (default: 150.0)')
         parser.add_argument('--full-frame-validation-frames', type=int, default=5,
@@ -256,7 +258,8 @@ class VideoProcessorBase:
         
         # Temporal consistency parameters
         os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
-        os.environ['MAX_SKIP_FRAMES'] = str(args.max_skip_frames)
+        os.environ['MOTION_TRACKING_GAP_SECONDS'] = str(args.motion_tracking_gap_seconds)
+        os.environ['DETECTION_VALIDATION_GAP_SECONDS'] = str(args.detection_validation_gap_seconds)
         os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
         os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
         os.environ['ANCHOR_CONFIDENCE_THRESHOLD'] = str(args.anchor_confidence_threshold)
@@ -289,7 +292,8 @@ class VideoProcessorBase:
             
             # Temporal consistency parameters
             os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
-            os.environ['MAX_SKIP_FRAMES'] = str(args.max_skip_frames)
+            os.environ['MOTION_TRACKING_GAP_SECONDS'] = str(args.motion_tracking_gap_seconds)
+            os.environ['DETECTION_VALIDATION_GAP_SECONDS'] = str(args.detection_validation_gap_seconds)
             os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
             os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
     

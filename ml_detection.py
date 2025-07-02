@@ -76,7 +76,6 @@ def calculate_bbox_overlap(bbox1, bbox2):
 
 # Get loggers
 logger = logging.getLogger('wildcams')
-analysis_logger = logger
 
 class MLDetectionEnsemble:
     """Enhanced ensemble ML detection system with accuracy improvements."""
@@ -321,7 +320,7 @@ class MLDetectionEnsemble:
         for idx in keep_indices:
             filtered_detections.append(detections[idx.item()])
         
-        analysis_logger.info(f"🧹 ADVANCED NMS: {len(detections)} → {len(filtered_detections)} detections (removed {len(detections) - len(filtered_detections)} duplicates)")
+        logger.info(f"🧹 ADVANCED NMS: {len(detections)} → {len(filtered_detections)} detections (removed {len(detections) - len(filtered_detections)} duplicates)")
         
         return filtered_detections
     
@@ -353,11 +352,11 @@ class MLDetectionEnsemble:
                     }
                     detections.append(detection)
             
-            analysis_logger.info(f"🔍 {model_name.upper()}: {len(detections)} detections (threshold: {threshold})")
+            logger.info(f"🔍 {model_name.upper()}: {len(detections)} detections (threshold: {threshold})")
             return detections
             
         except Exception as e:
-            analysis_logger.error(f"❌ {model_name} detection failed: {e}")
+            logger.error(f"❌ {model_name} detection failed: {e}")
             return []
     
     def run_ensemble_detection(
@@ -392,27 +391,11 @@ class MLDetectionEnsemble:
             detector = self.yolo_detectors.get(model_name)
             if detector is not None:
                 try:
-                    analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running {model_name.upper()} model with conf={self.confidence_threshold}")
-                    logger.info(f"🔍 Running {model_name.upper()} detection...")
                     results = detector(frame, conf=self.confidence_threshold, verbose=False)
-                    model_detections = 0
                     for result in results:
                         for box in result.boxes:
                             confidence = float(box.conf)
                             bbox = box.xyxy.tolist()[0]
-                            
-                            # Log high-confidence detections with spatial analysis
-                            if confidence >= 0.3 and crop_regions is not None and len(crop_regions) > 0:
-                                max_overlap = 0.0
-                                for crop_bbox in crop_regions:
-                                    overlap = calculate_bbox_overlap(crop_bbox, bbox)
-                                    max_overlap = max(max_overlap, overlap)
-                                
-                                logger.info(f"🖼️ {timestamp_seconds:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {model_name.upper()} | FULLFRAME_DETECT | overlap={max_overlap:.3f}")
-                                if len(crop_regions) <= 3:  # Show details for first few crop regions
-                                    for crop_bbox in crop_regions:
-                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
-                                        logger.info(f"  📏 Crop {crop_bbox} vs {model_name.upper()} {bbox} = overlap {overlap:.3f}")
                             
                             detection = {
                                 'confidence': confidence,
@@ -420,53 +403,25 @@ class MLDetectionEnsemble:
                                 'source': model_name
                             }
                             detections.append(detection)
-                            model_detections += 1
-                            logger.debug(f"{model_name.upper()}: conf={confidence:.4f}, bbox={bbox}")
-                    
-                    if model_detections > 0:
-                        analysis_logger.info(f"{model_name.upper()}: {model_detections} detections")
-                    logger.info(f"✅ {model_name.upper()}: {model_detections} detections found")
                     step_counter += 1
                 except Exception as e:
-                    analysis_logger.error(f"{model_name.upper()} model failed: {e}")
-                    logger.error(f"❌ {model_name.upper()} failed: {e}")
-            else:
-                logger.warning(f"⚠️ {model_name.upper()} detector not loaded")
+                    logger.error(f"{model_name.upper()} model failed: {e}")
         
         # 3. RT-DETR models (full-frame only)
         for model_name, rtdetr_model in self.rtdetr_models.items():
             if rtdetr_model is not None:
                 try:
-                    analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running {model_name.upper()} RT-DETR model with conf={self.confidence_threshold}")
-                    logger.info(f"🔬 Running {model_name.upper()} RT-DETR detection...")
-                    
                     # RT-DETR requires full frame context - skip if not available
                     if full_frame is not None:
                         input_frame = full_frame
-                        logger.info(f"🖼️ Using full frame for RT-DETR {model_name}: {input_frame.shape}")
                     else:
-                        logger.info(f"⏭️ Skipping RT-DETR {model_name} - no full frame available (RT-DETR requires full frames)")
                         continue
                     
                     results = rtdetr_model(input_frame, conf=self.confidence_threshold, verbose=False)
-                    model_detections = 0
                     for result in results:
                         for box in result.boxes:
                             confidence = float(box.conf)
                             bbox = box.xyxy.tolist()[0]
-                            
-                            # Log high-confidence RT-DETR detections with spatial analysis
-                            if confidence >= 0.3 and crop_regions is not None and len(crop_regions) > 0:
-                                max_overlap = 0.0
-                                for crop_bbox in crop_regions:
-                                    overlap = calculate_bbox_overlap(crop_bbox, bbox)
-                                    max_overlap = max(max_overlap, overlap)
-                                
-                                logger.info(f"🔬 {timestamp_seconds:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {model_name.upper()}-RTDETR | FULLFRAME_DETECT | overlap={max_overlap:.3f}")
-                                if len(crop_regions) <= 3:  # Show details for first few crop regions
-                                    for crop_bbox in crop_regions:
-                                        overlap = calculate_bbox_overlap(crop_bbox, bbox)
-                                        logger.info(f"  📏 Crop {crop_bbox} vs {model_name.upper()} RT-DETR {bbox} = overlap {overlap:.3f}")
                             
                             detection = {
                                 'confidence': confidence,
@@ -475,30 +430,19 @@ class MLDetectionEnsemble:
                                 'class': 'animal'
                             }
                             detections.append(detection)
-                            model_detections += 1
-                    
-                    logger.info(f"✅ {model_name.upper()} RT-DETR: {model_detections} detections found")
                     step_counter += 1
                     
                 except Exception as e:
-                    analysis_logger.error(f"{model_name.upper()} RT-DETR model failed: {e}")
-                    logger.error(f"❌ {model_name.upper()} RT-DETR failed: {e}")
-            else:
-                logger.warning(f"⚠️ {model_name.upper()} RT-DETR detector not loaded")
+                    logger.error(f"{model_name.upper()} RT-DETR model failed: {e}")
         
         # 4. MegaDetector v6 variants (PyTorch-Wildlife)
         for variant_name, md_model in self.megadetector_variants.items():
             if md_model is not None and 'rtdetr' not in variant_name.lower():
                 try:
-                    analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running MegaDetector v6 variant {variant_name}")
-                    logger.info(f"🔍 Running MegaDetector v6 ({variant_name})...")
-                    
                     # ALL Step 4 models must use full frame context
                     if full_frame is not None:
                         input_frame = full_frame
-                        logger.info(f"🖼️ Using full frame for {variant_name}: {input_frame.shape}")
                     else:
-                        logger.info(f"⏭️ Skipping {variant_name} - no full frame available (Step 4 requires full frames)")
                         continue
                     
                     rgb_frame = cv2.cvtColor(input_frame, cv2.COLOR_BGR2RGB)
@@ -529,7 +473,7 @@ class MLDetectionEnsemble:
                             logger.debug(f"Could not extract raw results: {e}")
                             results = {'detections': None}
                     except Exception as e:
-                        analysis_logger.error(f"{variant_name} failed: {e}")
+                        logger.error(f"{variant_name} failed: {e}")
                         results = {'detections': None}
                 
                     md_v6_detections = 0
@@ -672,20 +616,16 @@ class MLDetectionEnsemble:
                         else:
                             logger.debug(f"MegaDetector v6 no detections found in result dict")
                 
-                    logger.info(f"✅ MegaDetector v6 ({variant_name}): {md_v6_detections} detections found")
-                    analysis_logger.info(f"MegaDetector v6 ({variant_name}) found {md_v6_detections} detections")
                     step_counter += 1
                 except Exception as e:
                     import traceback
-                    analysis_logger.error(f"{variant_name} failed: {e}")
+                    logger.error(f"{variant_name} failed: {e}")
                     logger.debug(f"MegaDetector v6 ({variant_name}) traceback: {traceback.format_exc()}")
         
         # 4. DeepFaune detector (PyTorch-Wildlife)
         if self.deepfaune_detector is not None:
             try:
-                analysis_logger.info(f"ENSEMBLE_STEP_{step_counter}: Running DeepFaune detector (PyTorch-Wildlife)")
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                analysis_logger.info(f"DeepFaune input: numpy array {rgb_frame.shape}, dtype: {rgb_frame.dtype}")
                 
                 results = self.deepfaune_detector.single_image_detection(
                     rgb_frame,
@@ -693,14 +633,10 @@ class MLDetectionEnsemble:
                 )
                 
                 deepfaune_detections = 0
-                analysis_logger.info(f"DeepFaune result type: {type(results)}")
-                
                 if results is not None and isinstance(results, dict):
                     detections_list = results.get('detections', [])
-                    analysis_logger.info(f"DeepFaune detections list type: {type(detections_list)}, length: {len(detections_list)}")
                     
                     if hasattr(detections_list, 'xyxy') and hasattr(detections_list, 'confidence'):
-                        analysis_logger.info("Handling supervision.detection.core.Detections format")
                         try:
                             boxes = detections_list.xyxy
                             confidences = detections_list.confidence
@@ -715,7 +651,7 @@ class MLDetectionEnsemble:
                                 class_ids = class_ids.cpu().numpy()
                             
                             if len(boxes) == 0:
-                                analysis_logger.info("DeepFaune supervision.Detections contains 0 detections")
+                                pass
                             else:
                                 for i in range(len(boxes)):
                                     box = boxes[i]
@@ -745,16 +681,77 @@ class MLDetectionEnsemble:
                                         }
                                         detections.append(det)
                                         deepfaune_detections += 1
-                                        analysis_logger.info(f"DEEPFAUNE_DETECTOR: timestamp={timestamp_seconds:.2f}s, conf={det['confidence']:.4f}, bbox={det['bbox']}")
+                                        logger.info(f"DEEPFAUNE_DETECTOR: timestamp={timestamp_seconds:.2f}s, conf={det['confidence']:.4f}, bbox={det['bbox']}")
                         except Exception as e:
-                            analysis_logger.error(f"Error parsing supervision Detections: {e}")
+                            logger.error(f"Error parsing supervision Detections: {e}")
                 
-                analysis_logger.info(f"DeepFaune detector found {deepfaune_detections} detections")
             except Exception as e:
-                analysis_logger.error(f"DeepFaune detector failed: {e}")
+                logger.error(f"DeepFaune detector failed: {e}")
         
         # Check for correlations between MegaDetector extended classes and YOLO detections
         self._check_extended_class_correlations(detections, timestamp_seconds)
+        
+        return detections
+    
+    def run_single_model_detection(self, model_name: str, frame: np.ndarray, timestamp_seconds: float = 0.0, frame_idx: int = 0, full_frame: np.ndarray = None, accepted_rtdetr_overlap: float = 0.5) -> List[Dict]:
+        """Run detection on a single model and return results."""
+        detections = []
+        
+        # YOLO models
+        if model_name in self.yolo_detectors:
+            detector = self.yolo_detectors.get(model_name)
+            if detector is not None:
+                try:
+                    results = detector(frame, conf=self.confidence_threshold, verbose=False)
+                    for result in results:
+                        for box in result.boxes:
+                            confidence = float(box.conf)
+                            bbox = box.xyxy.tolist()[0]
+                            detection = {
+                                'confidence': confidence,
+                                'bbox': bbox,
+                                'source': model_name
+                            }
+                            detections.append(detection)
+                except Exception as e:
+                    logger.error(f"{model_name} model failed: {e}")
+        
+        # RT-DETR models
+        elif model_name.startswith('rtdetr-') and model_name in self.rtdetr_models:
+            rtdetr_model = self.rtdetr_models.get(model_name)
+            if rtdetr_model is not None and full_frame is not None:
+                try:
+                    results = rtdetr_model(full_frame, conf=self.confidence_threshold, verbose=False)
+                    for result in results:
+                        for box in result.boxes:
+                            confidence = float(box.conf)
+                            bbox = box.xyxy.tolist()[0]
+                            detection = {
+                                'confidence': confidence,
+                                'bbox': bbox,
+                                'source': f'rtdetr_{model_name}',
+                                'class': 'animal'
+                            }
+                            detections.append(detection)
+                except Exception as e:
+                    logger.error(f"{model_name} RT-DETR model failed: {e}")
+        
+        # MegaDetector variants
+        elif model_name.startswith('MDV6-') and model_name in self.megadetector_variants:
+            md_model = self.megadetector_variants.get(model_name)
+            if md_model is not None and full_frame is not None:
+                try:
+                    rgb_frame = cv2.cvtColor(full_frame, cv2.COLOR_BGR2RGB)
+                    results = md_model.single_image_detection(
+                        rgb_frame,
+                        det_conf_thres=self.model_thresholds.get(model_name, 0.1)
+                    )
+                    # Process MegaDetector results (simplified)
+                    if results and 'detections' in results:
+                        # Add simplified MD processing here if needed
+                        pass
+                except Exception as e:
+                    logger.error(f"{model_name} failed: {e}")
         
         return detections
     
@@ -831,7 +828,7 @@ class MLDetectionEnsemble:
             return detections
         
         try:
-            analysis_logger.info("ENHANCEMENT: Running enhanced preprocessing (histogram equalization)")
+            logger.info("ENHANCEMENT: Running enhanced preprocessing (histogram equalization)")
             
             # Histogram equalization for better contrast
             lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
@@ -850,12 +847,12 @@ class MLDetectionEnsemble:
                     }
                     detections.append(detection)
                     enhanced_detections += 1
-                    analysis_logger.info(f"ENHANCED: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
+                    logger.info(f"ENHANCED: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, bbox={detection['bbox']}")
             
-            analysis_logger.info(f"Enhanced preprocessing found {enhanced_detections} detections")
+            logger.info(f"Enhanced preprocessing found {enhanced_detections} detections")
             
         except Exception as e:
-            analysis_logger.error(f"Enhanced preprocessing failed: {e}")
+            logger.error(f"Enhanced preprocessing failed: {e}")
         
         return detections
     
@@ -883,13 +880,13 @@ class MLDetectionEnsemble:
         
         for scale in scales:
             try:
-                analysis_logger.info(f"MULTISCALE: Running multi-scale analysis at {scale}x")
+                logger.info(f"MULTISCALE: Running multi-scale analysis at {scale}x")
                 
                 # Scale frame
                 height, width = frame.shape[:2]
                 new_height, new_width = int(height * scale), int(width * scale)
                 scaled_frame = cv2.resize(frame, (new_width, new_height))
-                analysis_logger.info(f"Scaled frame from {height}x{width} to {new_height}x{new_width}")
+                logger.info(f"Scaled frame from {height}x{width} to {new_height}x{new_width}")
                 
                 # Run detection on scaled frame
                 results = self.detector(scaled_frame, conf=self.confidence_threshold, verbose=False)
@@ -912,12 +909,12 @@ class MLDetectionEnsemble:
                         }
                         detections.append(detection)
                         scale_detections += 1
-                        analysis_logger.info(f"SCALE_{scale}: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, original_bbox={bbox}, scaled_bbox={original_bbox}")
+                        logger.info(f"SCALE_{scale}: timestamp={timestamp_seconds:.2f}s, conf={detection['confidence']:.4f}, original_bbox={bbox}, scaled_bbox={original_bbox}")
                 
-                analysis_logger.info(f"Scale {scale}x found {scale_detections} detections")
+                logger.info(f"Scale {scale}x found {scale_detections} detections")
                 
             except Exception as e:
-                analysis_logger.error(f"Multi-scale analysis at {scale}x failed: {e}")
+                logger.error(f"Multi-scale analysis at {scale}x failed: {e}")
         
         return detections
     
