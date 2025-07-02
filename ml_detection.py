@@ -44,6 +44,9 @@ try:
 except ImportError:
     PYTORCH_WILDLIFE_AVAILABLE = False
 
+# Model detection threshold - minimal value to see ALL detections before ensemble filtering
+MODEL_DETECTION_THRESHOLD = 0.001
+
 def calculate_bbox_overlap(bbox1, bbox2):
     """Calculate overlap percentage of bbox2 within bbox1.
     
@@ -339,7 +342,7 @@ class MLDetectionEnsemble:
         threshold = self.model_thresholds.get(model_name, self.confidence_threshold)
         
         try:
-            results = model(frame, conf=threshold, verbose=False)
+            results = model(frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)  # Minimal threshold to see ALL detections
             detections = []
             
             for result in results:
@@ -391,7 +394,7 @@ class MLDetectionEnsemble:
             detector = self.yolo_detectors.get(model_name)
             if detector is not None:
                 try:
-                    results = detector(frame, conf=self.confidence_threshold, verbose=False)
+                    results = detector(frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)  # Minimal threshold to see ALL detections
                     for result in results:
                         for box in result.boxes:
                             confidence = float(box.conf)
@@ -417,7 +420,7 @@ class MLDetectionEnsemble:
                     else:
                         continue
                     
-                    results = rtdetr_model(input_frame, conf=self.confidence_threshold, verbose=False)
+                    results = rtdetr_model(input_frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)  # Minimal threshold to see ALL detections
                     for result in results:
                         for box in result.boxes:
                             confidence = float(box.conf)
@@ -702,7 +705,7 @@ class MLDetectionEnsemble:
             detector = self.yolo_detectors.get(model_name)
             if detector is not None:
                 try:
-                    results = detector(frame, conf=self.confidence_threshold, verbose=False)
+                    results = detector(frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)  # Minimal threshold to see ALL detections
                     for result in results:
                         for box in result.boxes:
                             confidence = float(box.conf)
@@ -721,7 +724,7 @@ class MLDetectionEnsemble:
             rtdetr_model = self.rtdetr_models.get(model_name)
             if rtdetr_model is not None and full_frame is not None:
                 try:
-                    results = rtdetr_model(full_frame, conf=self.confidence_threshold, verbose=False)
+                    results = rtdetr_model(full_frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)
                     for result in results:
                         for box in result.boxes:
                             confidence = float(box.conf)

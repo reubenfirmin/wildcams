@@ -202,7 +202,7 @@ process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 # Next-Generation Parameters:
 # --conf                          Detection confidence threshold (0.0-1.0, default: 0.25)
 # --max-validation-frames         Max frames to sample per motion track (1-10, default: 5)
-# --accepted-rtdetr-overlap       Spatial overlap threshold for validation (0.0-1.0, default: 0.3)
+# --spatial-overlap-threshold     Spatial overlap threshold between detections and motion regions (0.0-1.0, default: 0.5)
 # --detection-density-threshold  Camera handling detection threshold (1.0-50.0, default: 15.0)
 # --composite-motion-threshold   Composite motion threshold for camera handling (default: 1000000)
 # --min-motion-threshold         Minimum motion threshold to avoid processing static videos (default: 100)
@@ -232,7 +232,7 @@ process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 
 # Step 3 Full-Frame Analysis Parameters:
 # --max-validation-frames        Maximum frames to sample per motion track (default: 5)
-# --accepted-rtdetr-overlap      Spatial overlap threshold for validation (default: 0.3)
+# --spatial-overlap-threshold    Spatial overlap threshold between detections and motion regions (default: 0.5)
 # --temporal-spread-seconds      Temporal spread for frame sampling (default: 2.0)
 ```
 
@@ -362,7 +362,7 @@ wildcams/
 - **Track Validation**: Requires confidence + minimum frames + temporal continuity
 - **Consistent Behavior**: Prevents sporadic detections from validating tracks
 - **Rejection Logging**: Clear logging of spatially invalid detections for debugging
-- **Validation Threshold**: Configurable 30% overlap requirement (--accepted-rtdetr-overlap)
+- **Validation Threshold**: Configurable 50% overlap requirement (--spatial-overlap-threshold)
 
 ### RT-DETR Optimization (Updated)
 - **Full-Frame Only**: RT-DETR now runs exclusively on complete frames (optimal context)
@@ -575,6 +575,21 @@ BioCLIP should identify common Costa Rican fauna including:
 
 **Lesson**: ALWAYS desk check your work. Run a small test case to verify fixes before claiming they work. No more "this should work" - verify it actually works with real data.
 
+### CRITICAL RULE: NO HARDCODED CONSTANTS
+**NEVER hardcode values in the code.** Always use CLI parameters with defaults.
+
+**Wrong:**
+```python
+results = detector(frame, conf=0.05, verbose=False)  # WRONG - hardcoded
+```
+
+**Right:**
+```python
+results = detector(frame, conf=config.detection_threshold, verbose=False)  # CLI param
+```
+
+**Process:** Add CLI parameter → Add to config class → Use config.param_name everywhere
+
 ### Next Steps
 1. **Validation Testing**: Test 4-step pipeline on Videos 11 and 12
 2. **Performance Analysis**: Measure processing time and accuracy improvements
@@ -664,6 +679,28 @@ This methodology ensures consistent analysis of the next-generation pipeline per
 3. **Performance Validation**: Testing on Videos 11 and 12 for animal detection accuracy
 4. **BioCLIP Integration**: Next major enhancement for species-level identification
 5. **Parameter Optimization**: Critical defaults need tuning based on experiments.md findings
+
+### Critical Code Quality Rules
+
+#### No Hardcoded Constants
+**NEVER hardcode values in the code. Always use CLI parameters with defaults.**
+
+- ❌ `detector(frame, conf=0.001)` 
+- ✅ `detector(frame, conf=MODEL_DETECTION_THRESHOLD)`
+- ❌ `threshold = 0.05`
+- ✅ `threshold = config.confidence_threshold`
+
+All thresholds, parameters, and configuration values must be:
+1. Defined as constants with descriptive names
+2. Configurable via CLI parameters with reasonable defaults
+3. Never embedded directly in function calls or logic
+
+#### Model Detection vs Ensemble Confidence Separation
+**Individual models should show ALL detections; confidence filtering happens during ensemble evaluation.**
+
+- Model detection threshold: Very low (0.001) to see all possible detections
+- Ensemble confidence filtering: User-specified `--conf` parameter for final validation
+- Purpose: Analyze all model outputs before applying ensemble scoring criteria
 
 ### Critical Parameter Issues (from experiments.md)
 - **CONFIDENCE_THRESHOLD=0.1**: Too low, causes false positives. Test 0.15-0.3

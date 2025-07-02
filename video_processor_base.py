@@ -220,16 +220,16 @@ class VideoProcessorBase:
         # Step 4 full-frame validation parameters
         parser.add_argument('--max-validation-frames', type=int, default=5,
                            help='Maximum frames to validate with full ensemble (default: 5)')
-        parser.add_argument('--crop-weight', type=float, default=0.6,
-                           help='Weight for crop-based ML scores (default: 0.6)')
         parser.add_argument('--fullframe-weight', type=float, default=0.4,
                            help='Weight for full-frame ML scores (default: 0.4)')
-        parser.add_argument('--min-crop-size', type=int, default=900,
-                           help='Minimum crop area in pixels for ML analysis (default: 900)')
         parser.add_argument('--temporal-spread-seconds', type=float, default=2.0,
                            help='Minimum seconds between selected validation frames (default: 2.0)')
-        parser.add_argument('--accepted-rtdetr-overlap', type=float, default=0.5,
-                           help='Minimum overlap threshold for accepting RT-DETR extended class detections (default: 0.5)')
+        parser.add_argument('--spatial-overlap-threshold', type=float, default=0.5,
+                           help='Minimum spatial overlap threshold between detections and motion regions (default: 0.5)')
+        
+        # Debug parameters
+        parser.add_argument('--debug-show-spatially-invalid', action='store_true',
+                           help='Show spatially invalid detections in logs (default: False)')
     
     @staticmethod
     def set_environment_from_args(args, include_motion=False):
@@ -269,10 +269,11 @@ class VideoProcessorBase:
         
         # Step 4 validation parameters
         os.environ['MAX_VALIDATION_FRAMES'] = str(args.max_validation_frames)
-        os.environ['CROP_WEIGHT'] = str(args.crop_weight)
         os.environ['FULLFRAME_WEIGHT'] = str(args.fullframe_weight)
-        os.environ['MIN_CROP_SIZE'] = str(args.min_crop_size)
         os.environ['TEMPORAL_SPREAD_SECONDS'] = str(args.temporal_spread_seconds)
+        
+        # Debug parameters
+        os.environ['DEBUG_SHOW_SPATIALLY_INVALID'] = str(args.debug_show_spatially_invalid)
         
         # Motion detection specific parameters
         if include_motion:

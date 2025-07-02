@@ -115,6 +115,49 @@ process -v 4 8 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.40 --min-moti
   - Should have failed temporal validation but didn't
 - ✅ **IMG_0008:** PASSED (`temporal_pass=True`) - Expected behavior
 
-**CRITICAL BUG:** Temporal continuity validation is still not working correctly. Despite setting `--detection-validation-gap-seconds 0.2`, IMG_0004 passed with a 0.24s gap.
+**Actual Results (FIXED):**
+- ✅ **IMG_0004:** FAILED (`temporal_pass=False`) - **BUG FIXED!**
+  - Gap = 0.233s > 0.200s threshold correctly triggered failure
+  - Debug: `TEMPORAL_DEBUG | FAILED: gap 0.233s > threshold 0.200s`
+  - Result: `processing_status": "no_animals"` ✅
+- ✅ **IMG_0008:** PASSED (`temporal_pass=True`) - Expected behavior
+  - Gap = 0.167s < 0.200s threshold passed validation
+  - Result: Animals detected ✅
 
-**Analysis:** The temporal validation logic bug was not fully fixed. Need to investigate the actual implementation.
+**Bug Fixes Applied:**
+1. **Missing timestamp**: Added `det['timestamp'] = timestamp` to detection dictionaries
+2. **Parameter logging**: Moved logging after processor initialization 
+3. **Debug logging**: Added TEMPORAL_DEBUG to show actual gaps vs thresholds
+
+**Analysis:** Temporal continuity validation now working correctly. The false positive IMG_0004 is properly filtered while true positive IMG_0008 passes validation. Split temporal parameters provide appropriate strictness levels for motion tracking vs detection validation.
+
+## Test: 2025-07-02 09:30 (Full Batch - Fixed Temporal Validation)
+
+**Parameters:**
+```bash
+process -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.40 --min-motion-area 300 --filter-motion-var-threshold 32 --analysis-motion-var-threshold 45 --min-track-duration 0.1 --accepted-rtdetr-overlap 0.1 --detection-validation-gap-seconds 0.2
+```
+
+**Results:**
+
+**✅ Successful (5):** IMG_0007, IMG_0008, IMG_0009, IMG_0012, IMG_0018
+- All have strong ensemble scores and temporal consistency
+- Good mix of single-track (IMG_0008) and multi-track (IMG_0007, IMG_0012) detections
+
+**❌ Failed Motion Filter (8):**
+- **Insufficient motion (3):** IMG_0001, IMG_0005, IMG_0006 (score=88 < 100)
+- **Camera handling (5):** IMG_0013, IMG_0014, IMG_0015, IMG_0016, IMG_0017, IMG_0019 (score > 3,000,000)
+
+**❌ Failed ML Validation (7):** IMG_0002, IMG_0003, IMG_0004, IMG_0010, IMG_0011, IMG_0020
+- Motion passed but no consistent animal detections in full-frame analysis
+- IMG_0004 now correctly filtered by temporal validation (gap=0.233s > 0.2s)
+
+**Analysis:** 
+- **Great improvement**: IMG_0004 false positive now correctly filtered by temporal validation
+- **Known issues**: IMG_0010, IMG_0011 (true positives) still failing Step 3/4 validation
+- **Ground truth verification needed**: Videos 2, 3, 20 status unclear
+
+**Individual Problems to Address:**
+1. **IMG_0010, IMG_0011**: True positives failing ML validation - investigate Step 3/4 scoring
+2. **Videos 2, 3, 20**: Determine ground truth status (animals vs false positives)
+3. **Motion threshold tuning**: Consider adjusting insufficient motion threshold (currently 100)

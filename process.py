@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 # Import base processor
 from video_processor_base import VideoProcessorBase
+from ml_detection import MODEL_DETECTION_THRESHOLD
 
 # Global configuration object
 @dataclass
@@ -85,11 +86,12 @@ class ProcessingConfig:
     
     # Step 4 validation
     max_validation_frames: int
-    crop_weight: float
     fullframe_weight: float
-    min_crop_size: int
     temporal_spread_seconds: float
-    accepted_rtdetr_overlap: float
+    spatial_overlap_threshold: float
+    
+    # Debug parameters
+    debug_show_spatially_invalid: bool
     
     # Missing parameters that need CLI args
     full_frame_validation_frames: int
@@ -199,12 +201,8 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Tracking state
         self.active_tracks = []
         
-        # Create crop-only ensemble (exclude RT-DETR models)
-        self.crop_ensemble_models = [model for model in self.ensemble_models 
-                                    if 'rtdetr' not in model.lower()]
-        
-        logger.info(f"💡 ENSEMBLE SPLIT:")
-        logger.info(f"  🔲 Crop analysis: {self.crop_ensemble_models}")
+        # All models used in full-frame analysis
+        logger.info(f"💡 ENSEMBLE MODELS:")
         logger.info(f"  🖼️ Full-frame analysis: {self.ensemble_models}")
         self.next_track_id = 0
         
@@ -429,37 +427,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         return motion_regions
     
-    def run_ml_on_region(self, frame: np.ndarray, region: Tuple[int, int, int, int], 
-                        frame_idx: int, timestamp: float) -> List[Detection]:
-        """Run ML ensemble on motion region crop."""
-        x1, y1, x2, y2 = region
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        crop = frame[y1:y2, x1:x2]
-        
-        # Run ML ensemble on crop
-        crop_detections = self.ml_ensemble.run_ensemble_detection(crop, timestamp)
-        
-        # Convert crop coordinates to full frame coordinates
-        detections = []
-        for det in crop_detections:
-            # Adjust bounding box coordinates
-            crop_x1, crop_y1, crop_x2, crop_y2 = det['bbox']
-            full_x1 = x1 + crop_x1
-            full_y1 = y1 + crop_y1  
-            full_x2 = x1 + crop_x2
-            full_y2 = y1 + crop_y2
-            
-            detection = Detection(
-                bbox=(full_x1, full_y1, full_x2, full_y2),
-                confidence=det['confidence'],
-                frame_idx=frame_idx,
-                timestamp=timestamp,
-                source=det['source'],
-                motion_area=(x2-x1) * (y2-y1)
-            )
-            detections.append(detection)
-        
-        return detections
     
     def associate_detections_to_tracks(self, detections: List[Detection], fps: float) -> None:
         """Associate new detections to existing tracks or create new tracks."""
@@ -702,122 +669,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
             return []  # Early exit - skip expensive ML processing
         return motion_tracks
     
-    def run_ml_on_motion_tracks(self, video_path: Path, motion_tracks: List[Dict]) -> List[Dict]:
-        """STEP 3: Run crop-only ML analysis (YOLO + MegaDetector YOLO variants, NO RT-DETR)."""
-        cap = self._open_video_stream(video_path)
-        if not cap:
-            return []
-        
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        scored_tracks = []
-        
-        logger.info(f"[STEP3] Running ML on {len(motion_tracks)} motion tracks using {len(self.crop_ensemble_models)} models")
-        
-        for track in motion_tracks:
-            track_detections = []
-            track_scores = []
-            
-            # Sample representative frames from this motion track (max 5 per track)
-            sample_indices = self._sample_frame_indices(track['frames'], max_samples=5)
-            
-            for sample_idx in sample_indices:
-                frame_idx = track['frames'][sample_idx]
-                motion_regions = track['motion_regions'][sample_idx]
-                
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                
-                timestamp = frame_idx / fps
-                
-                # Run ML on each motion region in this frame
-                for region in motion_regions:
-                    x1, y1, x2, y2 = region
-                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                    
-                    # Ensure valid crop dimensions and minimum size (updated for larger crops)
-                    crop_width = x2 - x1
-                    crop_height = y2 - y1
-                    min_dim = 100  # Increased from 50 to match larger crop strategy
-                    min_area = 15000  # 150x100 minimum for better ML context
-                    if (x2 <= x1 or y2 <= y1 or 
-                        crop_width < min_dim or crop_height < min_dim or
-                        crop_width * crop_height < min_area):
-                        continue
-                        
-                    crop = frame[y1:y2, x1:x2]
-                    crop_area = crop_width * crop_height
-                    
-                    # Run crop-only ensemble (YOLO + MegaDetector YOLO variants, NO RT-DETR)
-                    crop_detections = self._run_crop_ensemble(crop, timestamp, frame_idx, motion_region=region)
-                    
-                    for det in crop_detections:
-                        # Transform coordinates back to full frame
-                        crop_x1, crop_y1, crop_x2, crop_y2 = det['bbox']
-                        full_bbox = [x1 + crop_x1, y1 + crop_y1, x1 + crop_x2, y1 + crop_y2]
-                        
-                        detection = {
-                            'frame_idx': frame_idx,
-                            'timestamp': timestamp,
-                            'bbox': full_bbox,
-                            'confidence': det['confidence'],
-                            'source': f"crop_{det['source']}",
-                            'crop_area': crop_area,
-                            'crop_dimensions': f"{crop.shape[1]}x{crop.shape[0]}",
-                            'track_id': track['track_id']
-                        }
-                        track_detections.append(detection)
-                        track_scores.append(det['confidence'])
-                    
-                    # Log detection silently
-            
-            # Calculate track summary statistics
-            if track_scores:
-                max_score = max(track_scores)
-                avg_score = sum(track_scores) / len(track_scores)
-                detection_count = len(track_detections)
-                
-                # Calculate per-model contribution statistics
-                model_contributions = {}
-                for det in track_detections:
-                    source = det['source']
-                    if source not in model_contributions:
-                        model_contributions[source] = {
-                            'count': 0,
-                            'max_conf': 0.0,
-                            'total_conf': 0.0
-                        }
-                    model_contributions[source]['count'] += 1
-                    model_contributions[source]['max_conf'] = max(model_contributions[source]['max_conf'], det['confidence'])
-                    model_contributions[source]['total_conf'] += det['confidence']
-                
-                # Calculate average confidence per model
-                for source in model_contributions:
-                    model_contributions[source]['avg_conf'] = model_contributions[source]['total_conf'] / model_contributions[source]['count']
-                
-                track_summary = {
-                    'track_id': track['track_id'],
-                    'detections': track_detections,
-                    'max_score': max_score,
-                    'avg_score': avg_score,
-                    'detection_count': detection_count,
-                    'duration_seconds': track['duration_seconds'],
-                    'frames_sampled': len(sample_indices),
-                    'frames_total': len(track['frames']),
-                    'model_contributions': model_contributions
-                }
-                scored_tracks.append(track_summary)
-                
-                logger.info(f"Track {track['track_id']}: {detection_count} detections, max_conf={max_score:.3f}")
-            else:
-                # Track had no detections
-                logger.info(f"Track {track['track_id']}: No detections found")
-        
-        cap.release()
-        
-        # Step 3 complete
-        return scored_tracks
     
     def _sample_frame_indices(self, frame_indices: List[int], max_samples: int = 5) -> List[int]:
         """Sample representative indices from frame list for motion track analysis."""
@@ -834,303 +685,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
             
         return indices
     
-    def _sample_crop_indices(self, frame_indices: List[int], max_samples: int = 5) -> List[int]:
-        """Sample representative indices from frame list for crop analysis."""
-        if len(frame_indices) <= max_samples:
-            return list(range(len(frame_indices)))
-        
-        # Sample evenly distributed indices
-        step = len(frame_indices) / max_samples
-        return [int(i * step) for i in range(max_samples)]
     
-    def _run_crop_ensemble(self, crop: np.ndarray, timestamp: float, frame_idx: int, motion_region: tuple = None) -> List[Dict]:
-        """Run crop-only ensemble models (YOLO + MegaDetector YOLO variants, NO RT-DETR)."""
-        all_detections = []
-        
-        for model_name in self.crop_ensemble_models:
-            try:
-                if (model_name.startswith('yolov8') or model_name.startswith('yolov10') or 
-                    model_name.startswith('yolo12')):
-                    # Run YOLO model directly
-                    detections = self._run_yolo_on_crop(crop, model_name, timestamp, frame_idx, motion_region)
-                elif model_name.startswith('MDV6-') and 'yolov' in model_name.lower():
-                    # Run MegaDetector YOLO variant on crop
-                    detections = self._run_megadetector_yolo_on_crop(crop, model_name, timestamp, frame_idx)
-                else:
-                    continue  # Skip non-YOLO models in crop analysis
-                
-                all_detections.extend(detections)
-                
-            except Exception as e:
-                import traceback
-                logger.error(f"Error running {model_name} on crop: {e}")
-                logger.debug(f"Full traceback: {traceback.format_exc()}")
-        
-        return all_detections
     
-    def _run_yolo_on_crop(self, crop: np.ndarray, model_name: str, timestamp: float, frame_idx: int, motion_region: tuple = None) -> List[Dict]:
-        """Run YOLO model on crop using unified registry."""
-        # Use unified YOLO detector registry
-        detector = self.ml_ensemble.yolo_detectors.get(model_name)
-        
-        if detector is None:
-            logger.warning(f"⚠️ {model_name} detector not found or not loaded")
-            return []
-        
-        try:
-            results = detector(crop, conf=config.confidence_threshold, verbose=False)
-        except Exception as e:
-            logger.error(f"❌ {model_name} detection failed on crop: {e}")
-            return []
-        
-        detections = []
-        if results and hasattr(results[0], 'boxes') and results[0].boxes is not None:
-            for box in results[0].boxes:
-                conf = float(box.conf)
-                if conf >= config.confidence_threshold:
-                    xyxy = box.xyxy[0].cpu().numpy()
-                    detection = {
-                        'bbox': [float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])],
-                        'confidence': conf,
-                        'source': model_name,
-                        'timestamp': timestamp,
-                        'frame_idx': frame_idx
-                    }
-                    detections.append(detection)
-                    # Log individual YOLO crop detection with precise bbox
-                    logger.info(f"🔲 {timestamp:.1f}s | {xyxy[0]:.0f},{xyxy[1]:.0f},{xyxy[2]:.0f},{xyxy[3]:.0f} | {model_name} | CROP_DETECT | conf={conf:.3f}")
-        
-        # Log summary for this model - motion bbox and final count
-        if motion_region:
-            motion_bbox = motion_region
-            logger.info(f"🔲 {timestamp:.1f}s | {motion_bbox[0]:.0f},{motion_bbox[1]:.0f},{motion_bbox[2]:.0f},{motion_bbox[3]:.0f} | {model_name} | CROP_RESULT | {len(detections)} detections")
-        else:
-            logger.info(f"🔲 {timestamp:.1f}s | {model_name} | CROP_RESULT | {len(detections)} detections")
-        
-        return detections
     
-    def _run_megadetector_yolo_on_crop(self, crop: np.ndarray, model_name: str, timestamp: float, frame_idx: int) -> List[Dict]:
-        """Run MegaDetector YOLO variant on crop (exclude RT-DETR)."""
-        if 'rtdetr' in model_name.lower():
-            return []  # Skip RT-DETR in crop analysis
-        
-        variant_model = self.ml_ensemble.megadetector_variants.get(model_name)
-        if variant_model is None:
-            return []
-        
-        try:
-            rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            results = variant_model.single_image_detection(
-                rgb_crop, 
-                det_conf_thres=config.confidence_threshold
-            )
-            
-            detections = []
-            if results and 'detections' in results:
-                # Process MegaDetector results
-                for det in results['detections']:
-                    
-                    # Handle different detection formats
-                    if isinstance(det, dict):
-                        # Dictionary format: {'conf': float, 'bbox': [...]}
-                        conf = det.get('conf', 0.0)
-                        bbox = det.get('bbox', None)
-                        class_id = det.get('class_id', 1)
-                    elif isinstance(det, (tuple, list)) and len(det) >= 3:
-                        # MegaDetector tuple format: (bbox_array, None, confidence, class_id, None, {})
-                        bbox = det[0]  # numpy array [x1, y1, x2, y2]
-                        conf = det[2] if len(det) > 2 and det[2] is not None else 0.0
-                        class_id = int(det[3]) if len(det) > 3 and det[3] is not None else 1
-                    else:
-                        print(f"DEBUG: Unexpected detection format: {type(det)} - {det}")
-                        continue
-                    
-                    if conf >= config.confidence_threshold:
-                        # Handle different bbox formats (bbox already extracted above)
-                        if isinstance(bbox, dict):
-                            # Convert dict format to list format [x1, y1, x2, y2]
-                            bbox = [bbox['x1'], bbox['y1'], bbox['x2'], bbox['y2']]
-                        elif isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
-                            # Ensure bbox is a list format
-                            bbox = list(bbox[:4])
-                        elif hasattr(bbox, 'tolist'):
-                            # Handle numpy arrays
-                            bbox = bbox.tolist()[:4]
-                        else:
-                            # Log the unexpected format and skip
-                            logger.warning(f"Unexpected bbox format from {model_name}: {type(bbox)} - {bbox}")
-                            continue
-                        # Log class correlation with motion tracks
-                        logger.info(f"🔲 {timestamp:.1f}s | {bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f} | {model_name} | CROP_DETECT")
-                        
-                        detections.append({
-                            'bbox': bbox,
-                            'confidence': conf,
-                            'class_id': class_id,
-                            'source': model_name,
-                            'timestamp': timestamp,
-                            'frame_idx': frame_idx
-                        })
-            
-            return detections
-            
-        except Exception as e:
-            import traceback
-            logger.error(f"Error running {model_name} on crop: {e}")
-            logger.debug(f"Full traceback: {traceback.format_exc()}")
-            return []
-    
-    def run_full_frame_validation_on_scored_crops(self, video_path: Path, scored_crops: List[Dict]) -> List[Dict]:
-        """STEP 4: Full-frame validation on N frames per high-scoring crop track."""
-        cap = self._open_video_stream(video_path)
-        if not cap:
-            return []
-        
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        validated_results = []
-        
-        # Sort scored crops by max score to prioritize best candidates
-        scored_crops.sort(key=lambda x: x['max_score'], reverse=True)
-        logger.info(f"[STEP4] Validating {len(scored_crops)} tracks with full-frame ensemble")
-        
-        # Limit validation to top tracks (validate all scored tracks)
-        max_tracks_to_validate = len(scored_crops)
-        
-        # Collect all crop regions from all tracks for spatial correlation
-        all_crop_regions = []
-        for track in scored_crops:
-            for detection in track['detections']:
-                if 'bbox' in detection:
-                    all_crop_regions.append(detection['bbox'])
-        
-        logger.info(f"[STEP4] Collected {len(all_crop_regions)} crop regions for spatial correlation: {all_crop_regions[:3]}{'...' if len(all_crop_regions) > 3 else ''}")
-        
-        for i, crop_track in enumerate(scored_crops[:max_tracks_to_validate]):
-            # Validate track silently
-            
-            # Select best detection frames for full-frame validation
-            track_detections = crop_track['detections']
-            best_detections = sorted(track_detections, key=lambda x: x['confidence'], reverse=True)
-            
-            # Select frames to validate (spread across time + highest confidence)
-            validation_frames = self._select_validation_frames(track_detections, max_frames=config.max_validation_frames)
-            
-            full_frame_scores = []
-            frames_processed = 0
-            
-            # Initialize RT-DETR contribution tracking for this track
-            rtdetr_contributions = {}
-            
-            for frame_idx in validation_frames:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                
-                frames_processed += 1
-                timestamp = frame_idx / fps
-                
-                # Run full ensemble (including RT-DETR) on full frame with crop region info for spatial correlation
-                full_detections = self.ml_ensemble.run_ensemble_detection(
-                    frame, timestamp, frame_idx, 
-                    full_frame=frame,
-                    crop_regions=all_crop_regions,
-                    accepted_rtdetr_overlap=config.accepted_rtdetr_overlap
-                )
-                
-                if full_detections:
-                    max_full_conf = max(det['confidence'] for det in full_detections)
-                    full_frame_scores.append(max_full_conf)
-                    
-                    # Track RT-DETR contributions from Step 4 full-frame validation
-                    for det in full_detections:
-                        source = det.get('source', 'unknown')
-                        # Only track RT-DETR models (they have 'rtdetr' in their source name)
-                        if 'rtdetr' in source.lower():
-                            if source not in rtdetr_contributions:
-                                rtdetr_contributions[source] = {
-                                    'count': 0,
-                                    'max_conf': 0.0,
-                                    'total_conf': 0.0
-                                }
-                            rtdetr_contributions[source]['count'] += 1
-                            rtdetr_contributions[source]['max_conf'] = max(rtdetr_contributions[source]['max_conf'], det['confidence'])
-                            rtdetr_contributions[source]['total_conf'] += det['confidence']
-                else:
-                    # Apply heavy penalty for frames where ensemble found nothing
-                    # Each zero frame gets a large negative impact
-                    full_frame_scores.append(-0.3)  # Negative penalty for zero detection frames
-            
-            # Calculate combined score with penalties for zero-detection frames
-            crop_score = crop_track['max_score']
-            
-            if frames_processed > 0:
-                # Include penalties in the average - zeros become negative values
-                avg_full_score = sum(full_frame_scores) / len(full_frame_scores)
-                max_full_score = max(full_frame_scores) if full_frame_scores else 0.0
-                
-                # Apply additional penalty based on ratio of zero-detection frames
-                zero_frames = sum(1 for score in full_frame_scores if score < 0)
-                zero_ratio = zero_frames / len(full_frame_scores)
-                
-                # Progressive penalty: each zero frame reduces score exponentially
-                zero_penalty = (1.0 - zero_ratio) ** 2  # Square the success ratio
-                
-                # Weighted combination with zero penalty
-                base_combined = (config.crop_weight * crop_score + 
-                               config.fullframe_weight * max(0, avg_full_score))  # Clamp negative avg to 0
-                combined_score = base_combined * zero_penalty
-                
-                validation_passed = combined_score >= config.confidence_threshold
-                
-                # Detailed failure logging
-                if not validation_passed:
-                    if crop_score > 0.35:
-                        logger.warning(f"📊 STRONG CROP FAILED VALIDATION: Track {crop_track['track_id']} - crop_score={crop_score:.3f} > 0.35 BUT combined={combined_score:.3f} < {config.confidence_threshold} (full-frame validation failed)")
-                        logger.warning(f"   📈 Crop evidence: {len(track_detections)} detections, max_conf={max(det['confidence'] for det in track_detections):.3f}")
-                        logger.warning(f"   📉 Full-frame failure: avg_score={avg_full_score:.3f}, zero_frames={zero_frames}/{len(full_frame_scores)}")
-                    else:
-                        logger.info(f"📊 WEAK CROP FAILED VALIDATION: Track {crop_track['track_id']} - crop_score={crop_score:.3f} <= 0.35 AND combined={combined_score:.3f} < {config.confidence_threshold}")
-                
-                validation_reason = f"combined={combined_score:.3f} (base={base_combined:.3f}*zero_penalty={zero_penalty:.3f}, zeros={zero_frames}/{len(full_frame_scores)})"
-                
-            else:
-                # No frames processed
-                avg_full_score = 0.0
-                max_full_score = 0.0
-                combined_score = 0.0
-                validation_passed = False
-                validation_reason = "no_frames_processed"
-            
-            # Calculate average confidence for RT-DETR contributions
-            for source in rtdetr_contributions:
-                if rtdetr_contributions[source]['count'] > 0:
-                    rtdetr_contributions[source]['avg_conf'] = rtdetr_contributions[source]['total_conf'] / rtdetr_contributions[source]['count']
-            
-            validation_result = {
-                'track_id': crop_track['track_id'],
-                'crop_score': crop_score,
-                'full_frame_avg_score': avg_full_score,
-                'full_frame_max_score': max_full_score,
-                'combined_score': combined_score,
-                'crop_detections': len(track_detections),
-                'validation_frames': len(validation_frames),
-                'duration_seconds': crop_track['duration_seconds'],
-                'best_detection': max(track_detections, key=lambda x: x['confidence']),
-                'validation_passed': validation_passed,
-                'rtdetr_contributions': rtdetr_contributions  # Add RT-DETR tracking from Step 4
-            }
-            
-            validated_results.append(validation_result)
-            logger.info(f"Track {crop_track['track_id']}: {validation_reason} ({'PASS' if validation_passed else 'FAIL'})")
-        
-        cap.release()
-        
-        # Filter to only validated results
-        passed_results = [r for r in validated_results if r['validation_passed']]
-        # Step 4 complete
-        
-        return passed_results
     
     def run_full_frame_analysis_on_motion_tracks(self, video_path: Path, motion_tracks: List[Dict]) -> List[Dict]:
         """
@@ -1193,7 +750,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     model_detections = self.ml_ensemble.run_single_model_detection(
                         model_name, frame, timestamp, frame_idx,
                         full_frame=frame,
-                        accepted_rtdetr_overlap=config.accepted_rtdetr_overlap
+                        accepted_rtdetr_overlap=config.spatial_overlap_threshold
                     )
                     
                     if model_detections:
@@ -1209,17 +766,28 @@ class NextGenVideoProcessor(VideoProcessorBase):
                                     max_overlap = overlap
                                     best_motion_bbox = motion_region
                             
-                            # Determine spatial validation
-                            spatial_valid = max_overlap >= config.accepted_rtdetr_overlap
-                            overall_score = det['confidence'] * max_overlap if spatial_valid else 0.0
+                            # Determine spatial validation and threshold status
+                            has_spatial_overlap = max_overlap > 0.0
+                            passes_threshold = max_overlap >= config.spatial_overlap_threshold
+                            overall_score = det['confidence'] * max_overlap if passes_threshold else 0.0
                             
-                            # Icon based on spatial validation
-                            icon = "✅" if spatial_valid else "❌"
-                            bbox_str = f"{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}"
-                            motion_bbox_str = f"{best_motion_bbox[0]:.0f},{best_motion_bbox[1]:.0f},{best_motion_bbox[2]:.0f},{best_motion_bbox[3]:.0f}" if best_motion_bbox else "none"
-                            status = "spatial_valid" if spatial_valid else "spatial_invalid"
+                            # Icon and status based on both spatial overlap and threshold
+                            if not has_spatial_overlap:
+                                icon = "❌"
+                                status = "spatial_invalid"
+                            elif passes_threshold:
+                                icon = "✅" 
+                                status = "spatial_valid"
+                            else:
+                                icon = "⚠️"
+                                status = "threshold_failed"
                             
-                            logger.info(f"{icon} | {model_name} | {bbox_str} | {det['confidence']:.3f} | {max_overlap:.3f} | {motion_bbox_str} | {overall_score:.3f} | {status}")
+                            bbox_str = f"bbox:{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}"
+                            motion_bbox_str = f"motn:{best_motion_bbox[0]:.0f},{best_motion_bbox[1]:.0f},{best_motion_bbox[2]:.0f},{best_motion_bbox[3]:.0f}" if best_motion_bbox else "motn:none"
+                            
+                            # Only log non-passing detections if debug flag is enabled
+                            if passes_threshold or config.debug_show_spatially_invalid:
+                                logger.info(f"{icon} | {model_name} | {bbox_str} | conf:{det['confidence']:.3f} | ovlp:{max_overlap:.3f} | {motion_bbox_str} | scor:{overall_score:.3f} | {status}")
                             
                             # Track model contributions for ensemble weighting
                             if model_name not in model_contributions:
@@ -1233,7 +801,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                             model_contributions[model_name]['count'] += 1
                             model_contributions[model_name]['max_conf'] = max(model_contributions[model_name]['max_conf'], det['confidence'])
                             model_contributions[model_name]['total_conf'] += det['confidence']
-                            if spatial_valid:
+                            if passes_threshold:
                                 model_contributions[model_name]['spatial_valid_count'] += 1
                                 model_contributions[model_name]['total_score'] += overall_score
                                 all_detections.append(det)
@@ -1278,14 +846,14 @@ class NextGenVideoProcessor(VideoProcessorBase):
                         frame_conf = best_det['confidence']
                         
                         # Check if this detection passed spatial validation
-                        spatial_valid = False
+                        passes_validation = False
                         for motion_region in all_motion_regions:
                             overlap = self._calculate_bbox_overlap(motion_region, best_det['bbox'])
-                            if overlap >= config.accepted_rtdetr_overlap:
-                                spatial_valid = True
+                            if overlap >= config.spatial_overlap_threshold:
+                                passes_validation = True
                                 break
                         
-                        if spatial_valid:
+                        if passes_validation:
                             frame_valid_model_count += 1
                         else:
                             frame_conf = 0.0  # Zero out confidence if spatial validation fails
@@ -1310,7 +878,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                         overlap = self._calculate_bbox_overlap(motion_region, det_bbox)
                         max_overlap = max(max_overlap, overlap)
                     
-                    if max_overlap >= config.accepted_rtdetr_overlap:
+                    if max_overlap >= config.spatial_overlap_threshold:
                         det['motion_overlap'] = max_overlap
                         det['frame_idx'] = frame_idx  # Store frame index for temporal continuity validation
                         det['timestamp'] = timestamp  # Store timestamp for temporal continuity validation
@@ -1318,8 +886,22 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 
                 # Log ensemble weighting header and row
                 logger.info(f"ENSEMBLE | {video_path.stem} | {timestamp:.2f}s | {frame_idx} | track_{track_id}")
-                ensemble_icon = "✅" if total_ensemble_score > 0 else "❌"
-                logger.info(f"{ensemble_icon} | combined | valid_models={valid_model_count} | ensemble_score={total_ensemble_score:.3f} | valid_detections={len(valid_detections)}")
+                
+                # Determine ensemble result and failure reason
+                if total_ensemble_score >= config.confidence_threshold:
+                    ensemble_icon = "✅"
+                    reason = "passed"
+                elif valid_model_count == 0:
+                    ensemble_icon = "❌"
+                    reason = f"no_valid_models"
+                elif len(valid_detections) == 0:
+                    ensemble_icon = "❌" 
+                    reason = f"no_detections"
+                else:
+                    ensemble_icon = "❌"
+                    reason = f"low_confidence ({total_ensemble_score:.3f}<{config.confidence_threshold})"
+                
+                logger.info(f"{ensemble_icon} | combined | valid_models={valid_model_count} | ensemble_score={total_ensemble_score:.3f} | valid_detections={len(valid_detections)} | {reason}")
                 
                 full_frame_detections.extend(valid_detections)
             
@@ -1355,10 +937,8 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     # Check time gaps between consecutive validated detections
                     for i in range(1, len(validated_timestamps)):
                         time_gap = validated_timestamps[i] - validated_timestamps[i-1]
-                        logger.info(f"TEMPORAL_DEBUG | gap={time_gap:.3f}s | threshold={config.detection_validation_gap_seconds:.3f}s | timestamps={validated_timestamps}")
                         if time_gap > config.detection_validation_gap_seconds:  # Time gap > max allowed means temporal discontinuity
                             temporal_continuity_passed = False
-                            logger.info(f"TEMPORAL_DEBUG | FAILED: gap {time_gap:.3f}s > threshold {config.detection_validation_gap_seconds:.3f}s")
                             break
                 
                 validation_passed = confidence_passed and frames_passed and temporal_continuity_passed
@@ -1444,27 +1024,44 @@ class NextGenVideoProcessor(VideoProcessorBase):
         step = len(frames) / max_frames
         return [frames[int(i * step)] for i in range(max_frames)]
     
-    def _calculate_bbox_overlap(self, bbox1: List[float], bbox2: List[float]) -> float:
-        """Calculate overlap percentage between two bounding boxes."""
-        x1_1, y1_1, x2_1, y2_1 = bbox1
-        x1_2, y1_2, x2_2, y2_2 = bbox2
+    def _calculate_bbox_overlap(self, motion_bbox: List[float], detection_bbox: List[float]) -> float:
+        """Calculate what percentage of motion region is contained within detection.
+        
+        Args:
+            motion_bbox: Motion region coordinates [x1, y1, x2, y2]  
+            detection_bbox: ML detection coordinates [x1, y1, x2, y2]
+            
+        Returns:
+            float: Percentage of motion area contained within detection (0.0 to 1.0)
+                  1.0 = motion fully contained within detection
+                  <1.0 = motion extends beyond detection boundaries
+        """
+        mx1, my1, mx2, my2 = motion_bbox
+        dx1, dy1, dx2, dy2 = detection_bbox
         
         # Calculate intersection
-        ix1 = max(x1_1, x1_2)
-        iy1 = max(y1_1, y1_2)
-        ix2 = min(x2_1, x2_2)
-        iy2 = min(y2_1, y2_2)
+        ix1 = max(mx1, dx1)
+        iy1 = max(my1, dy1)
+        ix2 = min(mx2, dx2)
+        iy2 = min(my2, dy2)
         
         if ix1 >= ix2 or iy1 >= iy2:
             return 0.0  # No overlap
         
         intersection_area = (ix2 - ix1) * (iy2 - iy1)
-        bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+        motion_area = (mx2 - mx1) * (my2 - my1)
         
-        if bbox2_area <= 0:
+        if motion_area <= 0:
             return 0.0
         
-        return intersection_area / bbox2_area
+        # Calculate motion area that falls outside the detection
+        motion_outside_detection = motion_area - intersection_area
+        
+        # Score = 1.0 - (penalty for motion outside detection)
+        # 1.0 = all motion within detection (perfect)
+        # 0.0 = all motion outside detection (terrible)
+        penalty = motion_outside_detection / motion_area
+        return 1.0 - penalty
     
     def _select_validation_frames(self, detections: List[Dict], max_frames: int = 3) -> List[int]:
         """Select representative frames for validation (temporal spread + high confidence)."""
@@ -1677,7 +1274,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         return tracks
     
     def process_video_with_features(self, video_path: Path) -> Tuple[Optional[Dict], Optional[np.ndarray]]:
-        """Process video with correct pipeline: motion tracking -> bbox extraction -> ML on crops -> full-frame validation."""
+        """Process video with direct pipeline: motion tracking -> full-frame analysis."""
         import time
         start_time = time.time()
         
@@ -1812,8 +1409,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         best_sequence = max(final_validated_sequences, key=lambda s: s['combined_score'])
         best_detection = best_sequence['best_detection']
         
-        # Save crops for validated sequences
-        saved_crop_paths = self.save_validated_crops(video_path, final_validated_sequences)
+        # No crop saving in direct pipeline
         
         analysis = {
             'video_path': str(video_path),
@@ -1825,7 +1421,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
             'temporal_consistency_duration': best_sequence['duration_seconds'],
             'best_detection_frame': best_detection['frame_idx'],
             'best_detection_timestamp': best_detection['timestamp'],
-            'saved_crops': saved_crop_paths,
             'detection': {
                 'confidence': best_detection['confidence'],
                 'bbox': best_detection['bbox'],
@@ -1866,9 +1461,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         # Crop detection region  
         best_detection = best_sequence['best_detection']
-        x1, y1, x2, y2 = best_detection['bbox']
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        crop = frame[y1:y2, x1:x2]
         
         # Extract features using ResNet
         return self.ml_ensemble.extract_features(frame, best_detection['bbox'])
@@ -1969,14 +1561,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 
                 logger.info(f"  ✅ {video_name}: time_range={time_range}, conf={confidence:.3f}, combined={combined_score:.3f}, tracks={motion_tracks}, validated={validated_sequences}, runtime={runtime_str}")
                 
-                # Show saved crop paths
-                saved_crops = analysis.get('saved_crops', [])
-                if saved_crops:
-                    logger.info(f"     📷 Validated crops: {len(saved_crops)} saved")
-                    for crop_path in saved_crops:
-                        logger.info(f"       {crop_path}")
-                else:
-                    logger.info(f"     📷 No crops saved")
             logger.info("")
         
         # Log videos that had no animals (need to track these during processing)
@@ -2001,14 +1585,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     validated = failure_data.get('validated', 'N/A')
                     motion_tracks = failure_data.get('motion_tracks', 'N/A')
                     
-                    # Check for strong crop/zero full-frame condition
-                    strong_crop_indicator = ""
-                    if (conf != 'N/A' and isinstance(conf, str) and 
-                        conf.replace('.', '').isdigit() and float(conf) > 0.35 and 
-                        combined == 'N/A' and rejection_reason == 'failed_full_frame_analysis'):
-                        strong_crop_indicator = " 🎯[STRONG_CROP+ZERO_FULLFRAME]"
-                    
-                    logger.info(f"  ⚪ {video_name}: motion_score={composite_score}, conf={conf}, combined={combined}, tracks={tracks}, validated={validated}, reason={rejection_reason}, runtime={runtime_str}{strong_crop_indicator}")
+                    logger.info(f"  ⚪ {video_name}: motion_score={composite_score}, conf={conf}, combined={combined}, tracks={tracks}, validated={validated}, reason={rejection_reason}, runtime={runtime_str}")
                 else:
                     logger.info(f"  ⚪ {video_name}: motion_score={composite_score}, reason={rejection_reason}, runtime={runtime_str}")
             logger.info("")
@@ -2157,7 +1734,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     'frame_idx': analysis['best_detection_frame'],
                     'timestamp': analysis['best_detection_timestamp'],
                     'bbox': analysis['detection']['bbox'],
-                    'crop_score': analysis['detection'].get('crop_score', 0.0),  # Default for 3-step pipeline
                     'full_frame_score': analysis['detection']['full_frame_score'],
                     'source': analysis['detection']['source']
                 }
@@ -2212,60 +1788,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 logger.info(f"🎯 Temporal track built: {len(track['frames'])} frames over {track['duration_seconds']:.2f}s")
         
         return temporal_tracks
-    
-    def save_validated_crops(self, video_path: Path, validated_sequences: List[Dict]) -> List[str]:
-        """Save crops from validated sequences where full-frame analysis confirmed detection."""
-        import cv2
-        
-        # Create crops directory
-        crops_dir = self.output_dir / 'validated_crops' / video_path.stem
-        crops_dir.mkdir(parents=True, exist_ok=True)
-        
-        saved_paths = []
-        
-        # Open video for crop extraction
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            logger.error(f"Failed to open video for crop extraction: {video_path}")
-            return saved_paths
-        
-        try:
-            for seq_idx, sequence in enumerate(validated_sequences):
-                # Get the best detection from this sequence for crop extraction
-                best_detection = sequence['best_detection']
-                frame_idx = best_detection['frame_idx']
-                bbox = best_detection['bbox']
-                timestamp = best_detection['timestamp']
-                
-                # Seek to the frame
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                
-                if ret:
-                    # Extract crop using bbox coordinates
-                    x1, y1, x2, y2 = map(int, bbox)
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
-                    
-                    if x2 > x1 and y2 > y1:
-                        crop = frame[y1:y2, x1:x2]
-                        
-                        # Generate filename with timestamp and confidence
-                        confidence = best_detection['confidence']
-                        combined_score = sequence['combined_score']
-                        filename = f"seq{seq_idx}_t{timestamp:.1f}s_conf{confidence:.3f}_combined{combined_score:.3f}.jpg"
-                        crop_path = crops_dir / filename
-                        
-                        # Save crop
-                        cv2.imwrite(str(crop_path), crop)
-                        saved_paths.append(str(crop_path))
-                        
-                        logger.info(f"💾 Saved validated crop: {crop_path}")
-                
-        finally:
-            cap.release()
-        
-        return saved_paths
     
     def build_track_from_anchor(self, anchor_frame: int, all_detections_by_frame: Dict[int, List[Dict]], fps: float) -> Optional[Dict]:
         """Build bidirectional track from anchor point."""
@@ -2394,11 +1916,12 @@ def initialize_config_from_args(args) -> None:
         
         # Step 4 validation
         max_validation_frames=args.max_validation_frames,
-        crop_weight=args.crop_weight,
         fullframe_weight=args.fullframe_weight,
-        min_crop_size=args.min_crop_size,
         temporal_spread_seconds=args.temporal_spread_seconds,
-        accepted_rtdetr_overlap=args.accepted_rtdetr_overlap,
+        spatial_overlap_threshold=args.spatial_overlap_threshold,
+        
+        # Debug parameters
+        debug_show_spatially_invalid=args.debug_show_spatially_invalid,
         
         # Additional parameters
         full_frame_validation_frames=args.full_frame_validation_frames,
