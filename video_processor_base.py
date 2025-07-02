@@ -176,6 +176,10 @@ class VideoProcessorBase:
                            help='Motion detection method (default: MOG2)')
         parser.add_argument('--motion-var-threshold', type=int, default=32,
                            help='Motion detection variance threshold - higher = less sensitive (default: 32)')
+        parser.add_argument('--filter-motion-var-threshold', type=int, default=None,
+                           help='Lenient variance threshold for Step 2 motion filter (default: same as motion-var-threshold)')
+        parser.add_argument('--analysis-motion-var-threshold', type=int, default=None,
+                           help='Strict variance threshold for Step 3 spatial analysis (default: same as motion-var-threshold)')
         parser.add_argument('--min-motion-area', type=int, default=300,
                            help='Minimum motion area threshold in pixels (default: 2000)')
         parser.add_argument('--max-motion-area', type=int, default=80000,
@@ -271,6 +275,9 @@ class VideoProcessorBase:
         if include_motion:
             os.environ['MOTION_METHOD'] = args.motion_method
             os.environ['MOTION_VAR_THRESHOLD'] = str(args.motion_var_threshold)
+            # Set dual motion thresholds - use main threshold as default if not specified
+            os.environ['FILTER_MOTION_VAR_THRESHOLD'] = str(args.filter_motion_var_threshold or args.motion_var_threshold)
+            os.environ['ANALYSIS_MOTION_VAR_THRESHOLD'] = str(args.analysis_motion_var_threshold or args.motion_var_threshold)
             os.environ['MIN_MOTION_AREA'] = str(args.min_motion_area)
             os.environ['MAX_MOTION_AREA'] = str(args.max_motion_area)
             os.environ['MOTION_HISTORY'] = str(args.motion_history)

@@ -24,15 +24,15 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
    - **`ml_detection.py`** - Shared 3-model ML ensemble
 3. **Nix Development Environment** (`flake.nix`) - Reproducible development setup with uv Python package manager
 
-### Next-Generation 4-Step Pipeline Architecture
+### Next-Generation 3-Step Pipeline Architecture (Step 2 → Step 4 Direct Connection)
 
-The current production system uses a sophisticated 4-step pipeline optimized for camera trap footage:
+The current production system uses an optimized 3-step pipeline that eliminates crop analysis issues by connecting motion tracking directly to full-frame validation:
 
 #### **Step 1: Motion Detection + DeepSORT Temporal Tracking**
 - **Motion Detection**: MOG2/KNN background subtraction to identify movement regions
 - **DeepSORT Integration**: Robust temporal consistency tracking of detections across frames
-- **Anchor Point Detection**: ML detection on motion frames + regular sampling for stationary animals
-- **Bidirectional Linking**: Tracks built with configurable skip frames and distance thresholds
+- **Temporal Consistency**: Builds motion tracks across multiple frames with configurable skip frames
+- **Motion Region Collection**: Captures spatial regions of movement for later spatial validation
 - **Fallback Mode**: Simple bbox linking if DeepSORT unavailable
 
 #### **Step 2: Camera Handling Detection (Early Filtering)**
@@ -41,24 +41,21 @@ The current production system uses a sophisticated 4-step pipeline optimized for
 - **Density Analysis**: >5 tracks with >200 detections indicates excessive motion
 - **Early Exit**: Skips expensive ML processing on obvious false positives
 
-#### **Step 3: Crop-Based ML Analysis (YOLO + MegaDetector YOLO Only)**
-- **Crop-Only Ensemble**: YOLO (v8x, v8m) + MegaDetector YOLO variant (yolov10-e)
-- **RT-DETR Exclusion**: All RT-DETR models excluded from crop analysis (requires full-frame context)
-- **Sampling Strategy**: Representative crops sampled from each temporal track (max 5 per track)
-- **Detailed Scoring**: Track summaries with max/avg confidence, detection counts, duration
-
-#### **Step 4: Full-Frame Validation with Weighted Scoring**
-- **Full Ensemble**: All models including Ultralytics RT-DETR run on complete frames
-- **Frame Selection**: Temporal spread + highest confidence frames from top crop tracks
-- **Weighted Combination**: `crop_weight * crop_score + fullframe_weight * full_frame_score`
-- **Spatial Correlation**: RT-DETR and other full-frame detections analyzed for overlap with crop regions
-- **Final Validation**: Combined score threshold determines animal presence
+#### **Step 3: Full-Frame Analysis with Spatial Overlap Validation (NEW APPROACH)**
+- **Direct Motion Track Input**: Takes motion tracks directly from Step 2 (no crop analysis)
+- **Full Ensemble Processing**: Complete 4-model ensemble on full frames (YOLO + RT-DETR + MegaDetector)
+- **Temporal Frame Sampling**: Selects representative frames from each motion track (max 5 per track)
+- **Spatial Overlap Validation**: Requires 30% overlap between full-frame detections and motion regions
+- **Model Contribution Tracking**: Comprehensive tracking of all ensemble models in full-frame context
+- **Validation Logic**: Simple confidence thresholding with spatial overlap requirement
+- **False Positive Reduction**: Spatial validation eliminates detections that don't correlate with motion
+- **RT-DETR Optimization**: Transformer models work on full frames (their optimal context)
 
 ### Four-Model ML Ensemble (Default)
-1. **YOLOv8x** (primary - highest accuracy general detection)
-2. **YOLOv8m** (medium model - balance of speed and accuracy)  
-3. **MegaDetector v6 YOLOv10-e** (wildlife-specific)
-4. **RT-DETR-L** (Ultralytics Transformer-based, full-frame only)
+1. **YOLO12x** (primary - latest YOLO architecture, highest accuracy)
+2. **YOLO12m** (medium model - balance of speed and accuracy)  
+3. **MegaDetector v6 YOLOv10-e** (wildlife-specific, camera trap optimized)
+4. **RT-DETR-L** (Ultralytics Transformer-based, full-frame spatial understanding)
 
 **Additional Available Models**:
 - **YOLOv10**: n/s/m/b/l/x variants (end-to-end optimized, no NMS)
@@ -77,9 +74,9 @@ The current production system uses a sophisticated 4-step pipeline optimized for
 - **Full-Frame Requirement**: Requires complete image context for optimal performance
 
 **Integration**: 
-- **Step 3 Exclusion**: Skipped in crop analysis due to global context requirements
-- **Step 4 Only**: Used exclusively in full-frame validation for maximum accuracy
-- **Spatial Overlap**: Detections analyzed for spatial correlation with crop regions
+- **Full-Frame Only**: Runs in Step 3 alongside all other models on complete frames
+- **Spatial Context**: Leverages transformer architecture for comprehensive scene understanding
+- **Motion Correlation**: Detections analyzed for spatial overlap with motion regions from Step 1
 
 ### MegaDetector v6 Technical Details
 
@@ -108,27 +105,27 @@ The current production system uses a sophisticated 4-step pipeline optimized for
 
 **Current Integration**: Uses identical YOLO/RT-DETR architectures with wildlife-specific pre-trained weights
 
-**Model Usage Strategy**:
-- **Step 3 (Crops)**: YOLOv8x, YOLOv8m, MDV6-yolov10-e
-- **Step 4 (Full-frame)**: All models including MDV6-rtdetr-c
-- **RT-DETR Rationale**: Requires full-frame context for optimal coordinate accuracy
+**Model Usage Strategy (Updated)**:
+- **Step 3 (Full-Frame Only)**: All models run on complete frames - YOLO12x, YOLO12m, MDV6-yolov10-e, RT-DETR-L
+- **Spatial Overlap Validation**: All detections must overlap 30% with motion regions from Step 1
+- **No Crop Analysis**: Eliminated crop processing entirely to avoid blur/quality issues
 
 ### Enhanced Processing Features
-- **DeepSORT Temporal Consistency**: Robust multi-object tracking with appearance features
-- **Smart Crop Sampling**: Avoids processing all crops, focuses on representative samples
-- **Weighted Validation**: Combines crop analysis confidence with full-frame validation
+- **DeepSORT Temporal Consistency**: Robust multi-object tracking with appearance features for motion tracks
+- **Direct Motion-to-Full-Frame**: Skips crop analysis, connects motion tracking directly to full-frame validation
+- **Spatial Overlap Validation**: Requires spatial correlation between ML detections and motion regions
 - **Configurable Thresholds**: All parameters exposed via CLI with no hardcoded defaults
-- **Detailed Logging**: Scores, dimensions, frame selection decisions logged for debugging
+- **Detailed Logging**: Spatial overlap scores, model contributions, temporal decisions logged for debugging
 
 ### False Positive Filtering (Multi-Level)
-**Hardware-Level Detection**:
+**Hardware-Level Detection (Step 2)**:
 - **Camera Handling**: >20 temporal tracks with high density/duration
 - **Camera Shake**: >10 tracks lasting >300 seconds
 
-**Algorithm-Level Validation**:
-- **Crop Analysis**: Track-level scoring with confidence thresholds
-- **Full-Frame Confirmation**: Weighted scoring requiring validation majority
-- **Combined Scoring**: Multi-step evidence accumulation
+**Algorithm-Level Validation (Step 3)**:
+- **Spatial Correlation**: Requires 30% overlap between full-frame detections and motion regions
+- **Confidence Thresholding**: Simple confidence-based validation with spatial requirement
+- **Temporal Sampling**: Representative frame selection from motion tracks
 
 ## Hardware & Performance
 - **Target Platform**: AMD Ryzen 7 5700G (16 threads)
@@ -172,12 +169,10 @@ TRACKING_DISTANCE_THRESHOLD=100.0 # Max distance for tracking association pixels
 ANCHOR_CONFIDENCE_THRESHOLD=0.5   # Minimum confidence for anchor point detection
 MIN_TRACK_FRAMES=1                # Minimum frames required for valid track
 
-# Step 4 validation parameters
-MAX_VALIDATION_FRAMES=5           # Maximum frames to validate with full ensemble
-CROP_WEIGHT=0.6                   # Weight for crop-based ML scores
-FULLFRAME_WEIGHT=0.4              # Weight for full-frame ML scores
-MIN_CROP_SIZE=100                 # Minimum crop size in pixels
-TEMPORAL_SPREAD_SECONDS=2.0       # Temporal spread for validation frame selection
+# Step 3 validation parameters (updated for direct full-frame approach)
+MAX_VALIDATION_FRAMES=5           # Maximum frames to sample per motion track
+SPATIAL_OVERLAP_THRESHOLD=0.3     # Required overlap between detections and motion regions (30%)
+TEMPORAL_SPREAD_SECONDS=2.0       # Temporal spread for frame sampling from motion tracks
 ```
 
 ## Commands
@@ -188,29 +183,26 @@ stop       # Stop daemon
 logs       # View logs
 check      # Check daemon status
 
-# Next-Generation 4-Step Pipeline (Primary)
+# Next-Generation 3-Step Pipeline (Primary)
 process -v 7 8 9                 # Process specific videos
 process                          # Process all videos
 process -v IMG_0011.MP4          # Process by filename
 
 # Next-Generation tuning examples
 process --min-motion-area 100 --min-track-duration 0.5       # More sensitive motion
-process --max-validation-frames 3 --crop-weight 0.8          # Prioritize crop analysis
+process --max-validation-frames 3 --conf 0.35               # Stricter validation
 process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 
 # Available MegaDetector variants (-m):
 # MDV6-yolov9-c, MDV6-yolov9-e, MDV6-yolov10-c, MDV6-yolov10-e
 
 # Available ensemble models (-e):
-# yolov8x, yolov8m, yolov8n, yolov10n, yolov10s, yolov10m, yolov10b, yolov10l, yolov10x, yoloe11n, yoloe11s, yoloe11m, yoloe11l, yoloe11x, rtdetr-l, rtdetr-x, megadetector_v6 (comma-separated)
+# yolo12x, yolo12m, yolov8x, yolov8m, yolov8n, yolov10n, yolov10s, yolov10m, yolov10b, yolov10l, yolov10x, yoloe11n, yoloe11s, yoloe11m, yoloe11l, yoloe11x, rtdetr-l, rtdetr-x, MDV6-yolov10-e (comma-separated)
 
 # Next-Generation Parameters:
-# --conf                          Detection confidence threshold (0.0-1.0, default: 0.1)
-# --max-frames                    Max frames per video (1-500, default: 20)
-# --megadetector-high-conf        MegaDetector validation threshold (0.0-1.0, default: 0.3)
-# --yolo-high-conf               YOLO validation threshold (0.0-1.0, default: 0.4)
-# --min-yolo-detections          Min YOLO detections for validation (1-20, default: 3)
-# --weak-evidence-threshold      Weak evidence validation threshold (0.0-1.0, default: 0.25)
+# --conf                          Detection confidence threshold (0.0-1.0, default: 0.25)
+# --max-validation-frames         Max frames to sample per motion track (1-10, default: 5)
+# --accepted-rtdetr-overlap       Spatial overlap threshold for validation (0.0-1.0, default: 0.3)
 # --detection-density-threshold  Camera handling detection threshold (1.0-50.0, default: 15.0)
 # --composite-motion-threshold   Composite motion threshold for camera handling (default: 1000000)
 # --min-motion-threshold         Minimum motion threshold to avoid processing static videos (default: 100)
@@ -238,19 +230,17 @@ process --tracking-distance-threshold 50 --max-skip-frames 5 # Stricter tracking
 # --anchor-confidence-threshold  Minimum confidence for anchor point detection (default: 0.5)
 # --min-track-frames             Minimum frames required for valid track (default: 1)
 
-# Step 4 Validation Parameters:
-# --max-validation-frames        Maximum frames to validate with full ensemble (default: 5)
-# --crop-weight                  Weight for crop-based ML scores (default: 0.6)
-# --fullframe-weight             Weight for full-frame ML scores (default: 0.4)
-# --min-crop-size                Minimum crop size in pixels (default: 100)
-# --temporal-spread-seconds      Temporal spread for validation frame selection (default: 2.0)
+# Step 3 Full-Frame Analysis Parameters:
+# --max-validation-frames        Maximum frames to sample per motion track (default: 5)
+# --accepted-rtdetr-overlap      Spatial overlap threshold for validation (default: 0.3)
+# --temporal-spread-seconds      Temporal spread for frame sampling (default: 2.0)
 ```
 
 ## File Structure
 ```
 wildcams/
 ├── Core Processing
-│   ├── process.py                  # Next-generation 4-step pipeline (primary)
+│   ├── process.py                  # Next-generation 3-step pipeline (primary)
 │   ├── video_processor_base.py     # Shared base class and CLI management
 │   └── ml_detection.py             # Shared 4-model ensemble with RT-DETR handling
 ├── Infrastructure
@@ -269,34 +259,35 @@ wildcams/
 ```
 
 ## Current Status
-✅ **Next-Gen Pipeline**: 4-step architecture with DeepSORT temporal tracking complete
-✅ **RT-DETR Integration**: Proper full-frame vs crop context handling
-✅ **Modular Architecture**: Clean separation between steps and shared functionality
+✅ **Next-Gen Pipeline**: 3-step architecture with direct motion-to-full-frame connection complete
+✅ **Crop Analysis Eliminated**: Removed problematic crop processing, no more motion blur issues
+✅ **Spatial Overlap Validation**: Full-frame detections must correlate with motion regions (30% overlap)
+✅ **RT-DETR Full Integration**: All models run on complete frames in optimal context
+✅ **Modular Architecture**: Clean separation between motion tracking and full-frame analysis
 ✅ **Configurable Parameters**: All thresholds exposed via CLI with no hardcoded defaults
-✅ **Weighted Validation**: Sophisticated scoring combining crop and full-frame analysis
-✅ **Performance Optimized**: Smart sampling and early filtering for camera handling
-✅ **Logging Enhanced**: Detailed debugging with scores, dimensions, and decision tracking
+✅ **Enhanced False Positive Filtering**: Spatial validation reduces spurious detections
+✅ **Logging Enhanced**: Detailed spatial overlap scores and model contribution tracking
 
-## Recent Major Updates (2025-06-30)
+## Recent Major Updates (2025-07-02)
 
-### Next-Generation 4-Step Pipeline (Latest)
-- **Step 1**: Motion detection + DeepSORT temporal tracking with robust fallback
-- **Step 2**: Early camera handling detection with configurable thresholds  
-- **Step 3**: Crop-only ML analysis excluding RT-DETR, smart sampling per track
-- **Step 4**: Full-frame validation with weighted scoring and frame selection
-- **Architecture Clarity**: Clean separation of crop vs full-frame model usage
+### Step 2 → Step 4 Direct Connection (Latest)
+- **Step 3 Elimination**: Completely removed crop-based analysis to eliminate blur/quality issues
+- **Direct Motion-to-Full-Frame**: Motion tracks connect directly to full-frame ensemble analysis
+- **Spatial Overlap Validation**: Requires 30% overlap between full-frame detections and motion regions
+- **Full Ensemble Integration**: All models (YOLO12x, YOLO12m, MDV6-yolov10-e, RT-DETR-L) run on complete frames
+- **False Positive Reduction**: Spatial correlation requirement filters detections unrelated to motion
 
-### DeepSORT Temporal Consistency (Latest)
-- **Robust Tracking**: Multi-object tracking with appearance features and temporal linking
-- **Fallback Mode**: Simple bbox linking when DeepSORT unavailable
-- **Configurable Parameters**: max_age, n_init, distance thresholds exposed via CLI
-- **Track Validation**: Duration and frame count requirements for track acceptance
+### Spatial Validation System (New)
+- **Motion Region Collection**: Captures spatial extent of movement from Step 1 temporal tracks
+- **Overlap Calculation**: IoU-based spatial correlation between detections and motion regions
+- **Rejection Logging**: Clear logging of spatially invalid detections for debugging
+- **Validation Threshold**: Configurable 30% overlap requirement (--accepted-rtdetr-overlap)
 
-### RT-DETR Context Handling (Latest)
-- **Crop Exclusion**: RT-DETR excluded from Step 3 crop analysis (requires full-frame)
-- **Full-Frame Integration**: RT-DETR included in Step 4 validation for maximum accuracy
-- **Coordinate Integrity**: Proper handling of full-frame vs crop coordinate systems
-- **Model Selection**: Automatic ensemble splitting based on model capabilities
+### RT-DETR Optimization (Updated)
+- **Full-Frame Only**: RT-DETR now runs exclusively on complete frames (optimal context)
+- **Spatial Understanding**: Transformer architecture leverages full spatial context
+- **Motion Correlation**: RT-DETR detections validated against motion regions from temporal tracking
+- **Model Contribution Tracking**: Comprehensive tracking of RT-DETR contributions in final analysis
 
 ### CLI Architecture Refinement (Latest)
 - **Centralized Management**: All parameters handled in `video_processor_base.py`

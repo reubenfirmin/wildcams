@@ -64,6 +64,8 @@ class ProcessingConfig:
     # Motion detection
     motion_method: str
     motion_var_threshold: int
+    filter_motion_var_threshold: int
+    analysis_motion_var_threshold: int
     min_motion_area: int
     max_motion_area: int
     motion_history: int
@@ -157,10 +159,10 @@ class NextGenVideoProcessor(VideoProcessorBase):
         self.tracking_dir = self.video_dir / '.tracking'
         self.tracking_dir.mkdir(exist_ok=True)
         
-        # Motion detection configuration
-        self.motion_config = {
+        # Motion detection configuration for filter (Step 2)
+        self.filter_motion_config = {
             'method': config.motion_method,
-            'var_threshold': config.motion_var_threshold,
+            'var_threshold': config.filter_motion_var_threshold,
             'min_area': config.min_motion_area,
             'max_area': config.max_motion_area,
             'detect_shadows': True,
@@ -171,6 +173,24 @@ class NextGenVideoProcessor(VideoProcessorBase):
             'max_aspect_ratio': config.max_aspect_ratio,
             'motion_margin': config.motion_margin
         }
+        
+        # Motion detection configuration for spatial analysis (Step 3)
+        self.analysis_motion_config = {
+            'method': config.motion_method,
+            'var_threshold': config.analysis_motion_var_threshold,
+            'min_area': config.min_motion_area,
+            'max_area': config.max_motion_area,
+            'detect_shadows': True,
+            'history': config.motion_history,
+            'max_regions_per_frame': config.max_regions_per_frame,
+            'min_region_width': config.min_region_width,
+            'min_region_height': config.min_region_height,
+            'max_aspect_ratio': config.max_aspect_ratio,
+            'motion_margin': config.motion_margin
+        }
+        
+        # Primary motion config points to filter config for backward compatibility
+        self.motion_config = self.filter_motion_config
         
         # Initialize motion detection algorithm
         self.bg_subtractor = None
@@ -191,10 +211,11 @@ class NextGenVideoProcessor(VideoProcessorBase):
         logger.info(f"🎯 Next Generation video processor initialized")
         logger.info(f"🕒 Temporal consistency: min {config.min_track_duration}s, skip {config.max_skip_frames} frames")
         logger.info(f"🔍 Motion method: {self.motion_config['method']}")
+        logger.info(f"🔀 Dual motion detection: filter_var_threshold={config.filter_motion_var_threshold}, analysis_var_threshold={config.analysis_motion_var_threshold}")
         logger.info(f"✅ Full-frame validation: {config.full_frame_validation_frames} consecutive frames")
     
     def init_motion_detector(self):
-        """Initialize motion detection algorithm."""
+        """Initialize motion detection algorithm (for filter stage)."""
         if self.motion_config['method'] == 'MOG2':
             self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
                 detectShadows=self.motion_config['detect_shadows'],
@@ -212,6 +233,102 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         analysis_logger.info(f"Motion detector initialized: {self.motion_config['method']}")
     
+    def create_analysis_motion_detector(self):
+        """Create separate motion detector for spatial analysis with stricter parameters."""
+        if self.analysis_motion_config['method'] == 'MOG2':
+            return cv2.createBackgroundSubtractorMOG2(
+                detectShadows=self.analysis_motion_config['detect_shadows'],
+                varThreshold=self.analysis_motion_config['var_threshold'],
+                history=self.analysis_motion_config['history']
+            )
+        elif self.analysis_motion_config['method'] == 'KNN':
+            return cv2.createBackgroundSubtractorKNN(
+                detectShadows=self.analysis_motion_config['detect_shadows'],
+                dist2Threshold=400,
+                history=self.analysis_motion_config['history']
+            )
+        else:
+            raise ValueError(f"Unknown motion detection method: {self.analysis_motion_config['method']}")
+    
+    def _detect_motion_regions_with_subtractor(self, frame: np.ndarray, bg_subtractor, use_config: str = 'analysis') -> List[Tuple[int, int, int, int]]:
+        """Detect motion regions using a specific background subtractor and config."""
+        # Apply background subtraction
+        fg_mask = bg_subtractor.apply(frame)
+        
+        # Morphological operations to reduce noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Select appropriate config based on use case
+        active_config = self.analysis_motion_config if use_config == 'analysis' else self.filter_motion_config
+        
+        motion_regions = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            
+            # Filter by area
+            if area < active_config['min_area'] or area > active_config['max_area']:
+                continue
+            
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Filter by dimensions and aspect ratio
+            if (w < active_config['min_region_width'] or 
+                h < active_config['min_region_height']):
+                continue
+            
+            aspect_ratio = max(w, h) / min(w, h)
+            if aspect_ratio > active_config['max_aspect_ratio']:
+                continue
+            
+            # Expand region with smart margin for better ML context
+            base_margin = active_config['motion_margin']
+            
+            # Smart margin calculation: larger context for better crops
+            percentage_margin_w = max(base_margin, w * 0.75)
+            percentage_margin_h = max(base_margin, h * 0.75)
+            
+            # Ensure minimum crop size for ML effectiveness
+            min_crop_width = 150
+            min_crop_height = 150
+            
+            # Calculate expanded region
+            frame_h, frame_w = frame.shape[:2]
+            center_x, center_y = x + w // 2, y + h // 2
+            
+            # Initial expansion with smart margins
+            x1_expanded = max(0, x - int(percentage_margin_w))
+            y1_expanded = max(0, y - int(percentage_margin_h))
+            x2_expanded = min(frame_w, x + w + int(percentage_margin_w))
+            y2_expanded = min(frame_h, y + h + int(percentage_margin_h))
+            
+            # Ensure minimum crop size by expanding around center if needed
+            current_width = x2_expanded - x1_expanded
+            current_height = y2_expanded - y1_expanded
+            
+            if current_width < min_crop_width:
+                expansion_needed = (min_crop_width - current_width) // 2
+                x1_expanded = max(0, x1_expanded - expansion_needed)
+                x2_expanded = min(frame_w, x2_expanded + expansion_needed)
+                
+            if current_height < min_crop_height:
+                expansion_needed = (min_crop_height - current_height) // 2
+                y1_expanded = max(0, y1_expanded - expansion_needed)
+                y2_expanded = min(frame_h, y2_expanded + expansion_needed)
+            
+            motion_regions.append((x1_expanded, y1_expanded, x2_expanded, y2_expanded))
+            
+            # Limit number of regions to avoid processing too many
+            if len(motion_regions) >= active_config['max_regions_per_frame']:
+                break
+        
+        return motion_regions
+    
     def _open_video_stream(self, video_path: Path) -> Optional[cv2.VideoCapture]:
         """Open video stream with fallback backends."""
         for backend in [cv2.CAP_FFMPEG, cv2.CAP_GSTREAMER, cv2.CAP_ANY]:
@@ -223,8 +340,13 @@ class NextGenVideoProcessor(VideoProcessorBase):
         logger.error(f"❌ Could not open video with any backend: {video_path}")
         return None
     
-    def detect_motion_regions(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """Detect motion regions in frame using background subtraction."""
+    def detect_motion_regions(self, frame: np.ndarray, use_config: str = 'filter') -> List[Tuple[int, int, int, int]]:
+        """Detect motion regions in frame using background subtraction.
+        
+        Args:
+            frame: Input frame
+            use_config: 'filter' for lenient filtering config, 'analysis' for strict analysis config
+        """
         if self.bg_subtractor is None:
             return []
         
@@ -239,28 +361,31 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Find contours
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
+        # Select appropriate config based on use case
+        active_config = self.analysis_motion_config if use_config == 'analysis' else self.filter_motion_config
+        
         motion_regions = []
         for contour in contours:
             area = cv2.contourArea(contour)
             
             # Filter by area
-            if area < self.motion_config['min_area'] or area > self.motion_config['max_area']:
+            if area < active_config['min_area'] or area > active_config['max_area']:
                 continue
             
             # Get bounding rectangle
             x, y, w, h = cv2.boundingRect(contour)
             
             # Filter by dimensions and aspect ratio
-            if (w < self.motion_config['min_region_width'] or 
-                h < self.motion_config['min_region_height']):
+            if (w < active_config['min_region_width'] or 
+                h < active_config['min_region_height']):
                 continue
             
             aspect_ratio = max(w, h) / min(w, h)
-            if aspect_ratio > self.motion_config['max_aspect_ratio']:
+            if aspect_ratio > active_config['max_aspect_ratio']:
                 continue
             
             # Expand region with smart margin for better ML context
-            base_margin = self.motion_config['motion_margin']  # Still use config value as base
+            base_margin = active_config['motion_margin']  # Use appropriate config
             
             # Smart margin calculation: larger context for better crops
             # Use percentage-based expansion with minimum absolute margin
@@ -1007,6 +1132,211 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         return passed_results
     
+    def run_full_frame_analysis_on_motion_tracks(self, video_path: Path, motion_tracks: List[Dict]) -> List[Dict]:
+        """
+        NEW: Direct Step 2 → Step 4 connection.
+        Run full-frame analysis on motion tracks with spatial overlap validation.
+        
+        Args:
+            video_path: Path to video file
+            motion_tracks: List of motion tracks from Step 1-2
+            
+        Returns:
+            List of validated sequences with spatial overlap confirmation
+        """
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        validated_results = []
+        failed_tracks_data = []  # Capture data from failed tracks for summary
+        
+        analysis_logger.info(f"[STEP3] Running full-frame analysis on {len(motion_tracks)} motion tracks")
+        
+        for track in motion_tracks:
+            track_id = track['track_id']
+            
+            # Sample frames from motion track (temporal spread)
+            sample_frames = self._sample_motion_track_frames(track, max_frames=config.max_validation_frames)
+            
+            # Re-run motion detection with stricter analysis parameters for spatial validation
+            analysis_bg_subtractor = self.create_analysis_motion_detector()
+            all_motion_regions = []
+            
+            analysis_logger.info(f"Track {track_id}: Re-running motion detection with analysis parameters (var_threshold={self.analysis_motion_config['var_threshold']}) on {len(sample_frames)} frames")
+            
+            for frame_idx in sample_frames:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                
+                # Apply analysis motion detection with stricter parameters
+                motion_regions = self._detect_motion_regions_with_subtractor(frame, analysis_bg_subtractor, use_config='analysis')
+                all_motion_regions.extend(motion_regions)
+            
+            analysis_logger.info(f"Track {track_id}: Analysis motion detection found {len(all_motion_regions)} regions (vs filter motion regions from original track)")
+            
+            # Run full-frame analysis on sampled frames
+            full_frame_detections = []
+            model_contributions = {}
+            
+            for frame_idx in sample_frames:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                
+                timestamp = frame_idx / fps
+                
+                # Run full ensemble on complete frame (including RT-DETR)
+                detections = self.ml_ensemble.run_ensemble_detection(
+                    frame, timestamp, frame_idx,
+                    full_frame=frame,
+                    crop_regions=[],  # No crop regions needed for full-frame
+                    accepted_rtdetr_overlap=config.accepted_rtdetr_overlap
+                )
+                
+                # Track model contributions
+                for det in detections:
+                    source = det.get('source', 'unknown')
+                    if source not in model_contributions:
+                        model_contributions[source] = {
+                            'count': 0,
+                            'max_conf': 0.0,
+                            'total_conf': 0.0
+                        }
+                    model_contributions[source]['count'] += 1
+                    model_contributions[source]['max_conf'] = max(model_contributions[source]['max_conf'], det['confidence'])
+                    model_contributions[source]['total_conf'] += det['confidence']
+                
+                # Spatial overlap validation: do full-frame detections overlap with motion regions?
+                valid_detections = []
+                for det in detections:
+                    det_bbox = det['bbox']
+                    
+                    # Check overlap with any motion region from this track
+                    max_overlap = 0.0
+                    for i, motion_region in enumerate(all_motion_regions):
+                        overlap = self._calculate_bbox_overlap(motion_region, det_bbox)
+                        max_overlap = max(max_overlap, overlap)
+                        if i < 3:  # Debug first few regions
+                            analysis_logger.debug(f"   Region {i}: {motion_region} vs Detection {det_bbox} = overlap {overlap:.3f}")
+                    
+                    # Require spatial overlap with motion regions
+                    if max_overlap >= config.accepted_rtdetr_overlap:
+                        det['motion_overlap'] = max_overlap
+                        valid_detections.append(det)
+                        analysis_logger.info(f"🎯 {timestamp:.1f}s | {det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f} | {source} | SPATIAL_VALID | conf={det['confidence']:.3f}, overlap={max_overlap:.3f}")
+                    else:
+                        analysis_logger.info(f"❌ {timestamp:.1f}s | {det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f} | {source} | SPATIAL_REJECT | conf={det['confidence']:.3f}, overlap={max_overlap:.3f}")
+                        # Log first few motion regions for debugging
+                        if len(all_motion_regions) > 0:
+                            analysis_logger.info(f"   📍 Sample motion regions: {all_motion_regions[:3]}")
+                
+                full_frame_detections.extend(valid_detections)
+            
+            # Calculate average confidence for model contributions
+            for source in model_contributions:
+                if model_contributions[source]['count'] > 0:
+                    model_contributions[source]['avg_conf'] = model_contributions[source]['total_conf'] / model_contributions[source]['count']
+            
+            # Determine if track passes validation
+            if full_frame_detections:
+                # Find best detection
+                best_detection = max(full_frame_detections, key=lambda d: d['confidence'])
+                avg_confidence = sum(d['confidence'] for d in full_frame_detections) / len(full_frame_detections)
+                max_confidence = max(d['confidence'] for d in full_frame_detections)
+                
+                # Simple validation: use best confidence as combined score
+                combined_score = max_confidence
+                validation_passed = combined_score >= config.confidence_threshold
+                
+                if validation_passed:
+                    validated_result = {
+                        'track_id': track_id,
+                        'best_detection': {
+                            'frame_idx': best_detection.get('frame_idx', sample_frames[0]),
+                            'timestamp': best_detection.get('timestamp', sample_frames[0] / fps),
+                            'bbox': best_detection['bbox'],
+                            'confidence': best_detection['confidence'],
+                            'source': f"fullframe_{best_detection['source']}",
+                            'motion_overlap': best_detection.get('motion_overlap', 0.0)
+                        },
+                        'combined_score': combined_score,
+                        'full_frame_avg_score': avg_confidence,
+                        'full_frame_max_score': max_confidence,
+                        'detection_count': len(full_frame_detections),
+                        'validation_frames': len(sample_frames),
+                        'duration_seconds': track['duration_seconds'],
+                        'validation_passed': validation_passed,
+                        'model_contributions': model_contributions
+                    }
+                    validated_results.append(validated_result)
+                    analysis_logger.info(f"✅ Track {track_id}: VALIDATED with {len(full_frame_detections)} detections, max_conf={max_confidence:.3f}")
+                else:
+                    analysis_logger.info(f"❌ Track {track_id}: REJECTED, combined_score={combined_score:.3f} < {config.confidence_threshold}")
+                    # Capture failed track data for summary
+                    failed_tracks_data.append({
+                        'track_id': track_id,
+                        'confidence': max_confidence,
+                        'combined_score': combined_score,
+                        'detections': len(full_frame_detections)
+                    })
+            else:
+                analysis_logger.info(f"❌ Track {track_id}: No detections with spatial overlap")
+                # Capture failed track data for summary (no overlap)
+                failed_tracks_data.append({
+                    'track_id': track_id,
+                    'confidence': 0.0,
+                    'combined_score': 0.0,
+                    'detections': 0
+                })
+        
+        cap.release()
+        
+        # Filter to only validated results
+        passed_results = [r for r in validated_results if r['validation_passed']]
+        
+        # Store failed track data for summary reporting
+        if hasattr(self, '_failed_tracks_data'):
+            self._failed_tracks_data.extend(failed_tracks_data)
+        else:
+            self._failed_tracks_data = failed_tracks_data
+        
+        return passed_results
+    
+    def _sample_motion_track_frames(self, track: Dict, max_frames: int = 5) -> List[int]:
+        """Sample representative frames from a motion track."""
+        frames = track['frames']
+        if len(frames) <= max_frames:
+            return frames
+        
+        # Sample evenly across the track duration
+        step = len(frames) / max_frames
+        return [frames[int(i * step)] for i in range(max_frames)]
+    
+    def _calculate_bbox_overlap(self, bbox1: List[float], bbox2: List[float]) -> float:
+        """Calculate overlap percentage between two bounding boxes."""
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # Calculate intersection
+        ix1 = max(x1_1, x1_2)
+        iy1 = max(y1_1, y1_2)
+        ix2 = min(x2_1, x2_2)
+        iy2 = min(y2_1, y2_2)
+        
+        if ix1 >= ix2 or iy1 >= iy2:
+            return 0.0  # No overlap
+        
+        intersection_area = (ix2 - ix1) * (iy2 - iy1)
+        bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+        
+        if bbox2_area <= 0:
+            return 0.0
+        
+        return intersection_area / bbox2_area
+    
     def _select_validation_frames(self, detections: List[Dict], max_frames: int = 3) -> List[int]:
         """Select representative frames for validation (temporal spread + high confidence)."""
         if not detections:
@@ -1222,6 +1552,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
         import time
         start_time = time.time()
         
+        # Clear failed tracks data for this video
+        self._failed_tracks_data = []
+        
         cap = self._open_video_stream(video_path)
         if not cap:
             return None, None
@@ -1264,74 +1597,20 @@ class NextGenVideoProcessor(VideoProcessorBase):
         else:
             analysis_logger.info(f"✅ [STEP 2/4] {len(filtered_tracks)} tracks passed filter")
         
-        # STEP 3: Run ML analysis on motion tracks
-        analysis_logger.info(f"🤖 [STEP 3/4] {video_path.name}: ML analysis on {len(filtered_tracks)} tracks")
-        scored_tracks = self.run_ml_on_motion_tracks(video_path, filtered_tracks)
+        # STEP 3 REMOVED: Direct connection Step 2 → Step 4
+        # Skip crop analysis entirely, go directly to full-frame validation
         
-        if not scored_tracks:
-            analysis_logger.warning(f"❌ [STEP 3/4] No ML detections found")
-            processing_time = time.time() - start_time
-            # Store rejection reason and timing for summary
-            self._rejection_reasons = getattr(self, '_rejection_reasons', {})
-            self._rejection_reasons[video_path.name] = "failed_crop_analysis"
-            self._processing_times = getattr(self, '_processing_times', {})
-            self._processing_times[video_path.name] = processing_time
-            # Store motion tracks data for summary (Step 3 failure - no ML results)
-            self._failed_video_data = getattr(self, '_failed_video_data', {})
-            self._failed_video_data[video_path.name] = {
-                'motion_tracks': len(motion_tracks),
-                'conf': 'N/A',
-                'combined': 'N/A',
-                'tracks': len(filtered_tracks),
-                'validated': 'N/A'
-            }
-            cap.release()
-            return None, None
-        else:
-            analysis_logger.info(f"✅ [STEP 3/4] {len(scored_tracks)} tracks with ML detections")
+        # STEP 3: Full-frame analysis on motion tracks with spatial overlap validation
+        analysis_logger.info(f"🎯 [STEP 3/4] {video_path.name}: Full-frame analysis on motion tracks")
+        final_validated_sequences = self.run_full_frame_analysis_on_motion_tracks(video_path, filtered_tracks)
         
-        # STEP 4: Full-frame validation on N frames per scored track
-        analysis_logger.info(f"🎯 [STEP 4/4] {video_path.name}: Full-frame validation")
-        final_validated_sequences = self.run_full_frame_validation_on_scored_crops(video_path, scored_tracks)
-        
-        # Integrate RT-DETR contributions from Step 4 into model tracking system
-        for validation_result in final_validated_sequences:
-            rtdetr_contributions = validation_result.get('rtdetr_contributions', {})
-            if rtdetr_contributions:
-                # Find the corresponding track in scored_tracks and add RT-DETR contributions
-                track_id = validation_result['track_id']
-                for track in scored_tracks:
-                    if track['track_id'] == track_id:
-                        # Merge RT-DETR contributions into the track's model_contributions
-                        if 'model_contributions' not in track:
-                            track['model_contributions'] = {}
-                        
-                        for rtdetr_model, rtdetr_stats in rtdetr_contributions.items():
-                            track['model_contributions'][rtdetr_model] = rtdetr_stats
-                        break
+        # Note: RT-DETR contributions are now tracked directly in the full-frame analysis function
+        # No need for separate integration since we're not using crop-based scoring
         
         if not final_validated_sequences:
-            analysis_logger.warning(f"❌ [STEP 4/4] No tracks passed validation")
-            
-            # Detailed failure analysis
-            strong_crop_failures = []
-            weak_crop_failures = []
-            
-            if scored_tracks:
-                for track in scored_tracks:
-                    if track['max_score'] > 0.35:
-                        strong_crop_failures.append(f"Track {track['track_id']}: crop_conf={track['max_score']:.3f}")
-                    else:
-                        weak_crop_failures.append(f"Track {track['track_id']}: crop_conf={track['max_score']:.3f}")
-                
-                if strong_crop_failures:
-                    analysis_logger.warning(f"📊 STRONG CROP TRACKS FAILED FULL-FRAME: {len(strong_crop_failures)} tracks with crop confidence > 0.35")
-                    for failure in strong_crop_failures:
-                        analysis_logger.warning(f"   {failure}")
-                    analysis_logger.warning(f"   📉 This suggests full-frame models couldn't confirm crop detections - potentially marginal/ambiguous animals")
-                
-                if weak_crop_failures:
-                    analysis_logger.info(f"📊 WEAK CROP TRACKS FAILED: {len(weak_crop_failures)} tracks with crop confidence <= 0.35 (expected)")
+            analysis_logger.warning(f"❌ [STEP 3/4] No tracks passed full-frame validation")
+            analysis_logger.info(f"📊 MOTION TRACKS FAILED FULL-FRAME: {len(filtered_tracks)} motion tracks found no animals in full-frame analysis")
+            analysis_logger.info(f"   📉 This suggests motion was from non-animal sources (wind, shadows, etc.)")
             
             processing_time = time.time() - start_time
             # Store rejection reason and timing for summary
@@ -1339,35 +1618,27 @@ class NextGenVideoProcessor(VideoProcessorBase):
             self._rejection_reasons[video_path.name] = "failed_full_frame_analysis"
             self._processing_times = getattr(self, '_processing_times', {})
             self._processing_times[video_path.name] = processing_time
-            # Store Step 3 ML data for summary (Step 4 failure - has ML results from Step 3)
-            if scored_tracks:
-                best_track = max(scored_tracks, key=lambda t: t['max_score'])
-                self._failed_video_data = getattr(self, '_failed_video_data', {})
-                self._failed_video_data[video_path.name] = {
-                    'motion_tracks': len(motion_tracks),
-                    'conf': f"{best_track['max_score']:.3f}",
-                    'combined': 'N/A',  # No combined score since validation failed
-                    'tracks': len(scored_tracks),
-                    'validated': 0
-                }
-                
-                # ALSO collect model contribution data for failed videos
-                self._model_contributions = getattr(self, '_model_contributions', {})
-                video_model_stats = {}
-                
-                for track in scored_tracks:
-                    for model_name, stats in track.get('model_contributions', {}).items():
-                        if model_name not in video_model_stats:
-                            video_model_stats[model_name] = {
-                                'total_detections': 0,
-                                'max_confidence': 0.0,
-                                'contributing_tracks': 0
-                            }
-                        video_model_stats[model_name]['total_detections'] += stats['count']
-                        video_model_stats[model_name]['max_confidence'] = max(video_model_stats[model_name]['max_confidence'], stats['max_conf'])
-                        video_model_stats[model_name]['contributing_tracks'] += 1
-                
-                self._model_contributions[video_path.name] = video_model_stats
+            # Store motion track data for summary (full-frame analysis failed)
+            self._failed_video_data = getattr(self, '_failed_video_data', {})
+            
+            # Get the best confidence from failed tracks if available
+            failed_tracks = getattr(self, '_failed_tracks_data', [])
+            best_conf = 'N/A'
+            best_combined = 'N/A'
+            if failed_tracks:
+                # Find the best confidence from failed tracks
+                best_track = max(failed_tracks, key=lambda x: x['confidence'] if x['confidence'] > 0 else 0)
+                if best_track['confidence'] > 0:
+                    best_conf = f"{best_track['confidence']:.3f}"
+                    best_combined = f"{best_track['combined_score']:.3f}"
+            
+            self._failed_video_data[video_path.name] = {
+                'motion_tracks': len(motion_tracks),
+                'conf': best_conf,  # Best confidence from failed tracks
+                'combined': best_combined,  # Best combined score from failed tracks  
+                'tracks': len(filtered_tracks),
+                'validated': 0
+            }
             cap.release()
             return None, None
         else:
@@ -1381,12 +1652,13 @@ class NextGenVideoProcessor(VideoProcessorBase):
         self._processing_times = getattr(self, '_processing_times', {})
         self._processing_times[video_path.name] = processing_time
         
-        # Collect and store model contribution data for summary
+        # Model contributions are now tracked directly in the full-frame analysis function
+        # Extract from validated sequences for summary
         self._model_contributions = getattr(self, '_model_contributions', {})
         video_model_stats = {}
         
-        for track in scored_tracks:
-            for model_name, stats in track.get('model_contributions', {}).items():
+        for sequence in final_validated_sequences:
+            for model_name, stats in sequence.get('model_contributions', {}).items():
                 if model_name not in video_model_stats:
                     video_model_stats[model_name] = {
                         'total_detections': 0,
@@ -1417,7 +1689,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         analysis = {
             'video_path': str(video_path),
             'animals_detected': ['animal'],
-            'detection_count': sum(seq['crop_detections'] for seq in final_validated_sequences),
+            'detection_count': sum(seq['detection_count'] for seq in final_validated_sequences),
             'frames_processed': total_frames,
             'motion_tracks': len(motion_tracks),
             'validated_sequences': len(final_validated_sequences),
@@ -1430,11 +1702,10 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 'bbox': best_detection['bbox'],
                 'area_ratio': self.calculate_area_ratio(best_detection['bbox'], frame_width, frame_height),
                 'source': best_detection['source'],
-                'crop_score': best_sequence['crop_score'],
                 'full_frame_score': best_sequence['full_frame_avg_score'],
                 'combined_score': best_sequence['combined_score']
             },
-            'processing_mode': 'next_generation_4step_pipeline'
+            'processing_mode': 'next_generation_3step_pipeline'
         }
         
         # Extract features from best detection
@@ -1757,7 +2028,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     'frame_idx': analysis['best_detection_frame'],
                     'timestamp': analysis['best_detection_timestamp'],
                     'bbox': analysis['detection']['bbox'],
-                    'crop_score': analysis['detection']['crop_score'],
+                    'crop_score': analysis['detection'].get('crop_score', 0.0),  # Default for 3-step pipeline
                     'full_frame_score': analysis['detection']['full_frame_score'],
                     'source': analysis['detection']['source']
                 }
@@ -1973,6 +2244,8 @@ def initialize_config_from_args(args) -> None:
         # Motion detection
         motion_method=args.motion_method,
         motion_var_threshold=args.motion_var_threshold,
+        filter_motion_var_threshold=args.filter_motion_var_threshold or args.motion_var_threshold,
+        analysis_motion_var_threshold=args.analysis_motion_var_threshold or args.motion_var_threshold,
         min_motion_area=args.min_motion_area,
         max_motion_area=args.max_motion_area,
         motion_history=args.motion_history,
