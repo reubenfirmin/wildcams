@@ -259,13 +259,43 @@ class NextGenVideoProcessor(VideoProcessorBase):
             if aspect_ratio > self.motion_config['max_aspect_ratio']:
                 continue
             
-            # Expand region with margin
-            margin = self.motion_config['motion_margin']
+            # Expand region with smart margin for better ML context
+            base_margin = self.motion_config['motion_margin']  # Still use config value as base
+            
+            # Smart margin calculation: larger context for better crops
+            # Use percentage-based expansion with minimum absolute margin
+            percentage_margin_w = max(base_margin, w * 0.75)  # 75% of motion width or base margin
+            percentage_margin_h = max(base_margin, h * 0.75)  # 75% of motion height or base margin
+            
+            # Ensure minimum crop size for ML effectiveness (at least 150x150)
+            min_crop_width = 150
+            min_crop_height = 150
+            
+            # Calculate expanded region
             frame_h, frame_w = frame.shape[:2]
-            x1 = max(0, x - margin)
-            y1 = max(0, y - margin)
-            x2 = min(frame_w, x + w + margin)
-            y2 = min(frame_h, y + h + margin)
+            center_x, center_y = x + w // 2, y + h // 2
+            
+            # Initial expansion with smart margins
+            x1_expanded = max(0, x - int(percentage_margin_w))
+            y1_expanded = max(0, y - int(percentage_margin_h))
+            x2_expanded = min(frame_w, x + w + int(percentage_margin_w))
+            y2_expanded = min(frame_h, y + h + int(percentage_margin_h))
+            
+            # Ensure minimum crop dimensions by expanding from center if needed
+            current_width = x2_expanded - x1_expanded
+            current_height = y2_expanded - y1_expanded
+            
+            if current_width < min_crop_width:
+                needed_expansion = (min_crop_width - current_width) // 2
+                x1_expanded = max(0, x1_expanded - needed_expansion)
+                x2_expanded = min(frame_w, x2_expanded + needed_expansion)
+            
+            if current_height < min_crop_height:
+                needed_expansion = (min_crop_height - current_height) // 2
+                y1_expanded = max(0, y1_expanded - needed_expansion)
+                y2_expanded = min(frame_h, y2_expanded + needed_expansion)
+            
+            x1, y1, x2, y2 = x1_expanded, y1_expanded, x2_expanded, y2_expanded
             
             motion_regions.append((x1, y1, x2, y2))
             
@@ -581,12 +611,14 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     x1, y1, x2, y2 = region
                     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                     
-                    # Ensure valid crop dimensions and minimum size
+                    # Ensure valid crop dimensions and minimum size (updated for larger crops)
                     crop_width = x2 - x1
                     crop_height = y2 - y1
+                    min_dim = 100  # Increased from 50 to match larger crop strategy
+                    min_area = 15000  # 150x100 minimum for better ML context
                     if (x2 <= x1 or y2 <= y1 or 
-                        crop_width < 50 or crop_height < 50 or  # Minimum dimensions
-                        crop_width * crop_height < config.min_crop_size):  # Minimum area
+                        crop_width < min_dim or crop_height < min_dim or
+                        crop_width * crop_height < min_area):
                         continue
                         
                     crop = frame[y1:y2, x1:x2]
