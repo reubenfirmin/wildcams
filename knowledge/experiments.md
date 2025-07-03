@@ -221,6 +221,16 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 
 **Analysis:** Camera handling detection fixed. Video 18 scored 3.2x higher than Video 7, correctly identifying dispersed camera movement vs concentrated animal movement.
 
+## Test: 2025-07-03 05:33 (Camera Handling Detection Validation) (Log: wildcams_20250703_053345.log)
+
+**Change:** Tested fixed camera handling detection with default threshold 8.0.
+
+**Results:**
+- **✅ IMG_0007 (bird):** Score=3.35 → PASSED → Animal detected with temporal consistency
+- **❌ IMG_0018 (camera handling):** Score=10.83 → BLOCKED as camera handling
+
+**Analysis:** Fixed camera handling detection working correctly. Video 7 successfully proceeded through full pipeline and detected animals, while video 18 correctly blocked at Step 2.
+
 ## Test: 2025-07-02 19:50 (IoU Overlap Calculation + Frame-First Algorithm) (Log: wildcams_20250702_195044.log)
 
 **Rationale:** 

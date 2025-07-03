@@ -36,7 +36,7 @@ from torchvision.models import resnet18, ResNet18_Weights
 from tqdm import tqdm
 
 # Import shared ML detection module
-from knowledge.ml_detection import MLDetectionEnsemble
+from ml_detection import MLDetectionEnsemble
 
 # Load environment variables
 try:
