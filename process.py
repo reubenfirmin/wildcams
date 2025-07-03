@@ -27,7 +27,7 @@ import math
 import numpy as np
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, NamedTuple
+from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 from dataclasses import dataclass
 
@@ -43,18 +43,7 @@ class ProcessingConfig:
     max_frames_per_video: int
     confidence_threshold: float
     
-    # Validation thresholds
-    megadetector_high_conf: float
-    yolo_high_conf: float
-    min_yolo_detections: int
-    weak_evidence_threshold: float
-    
     # Camera handling detection
-    max_tracks_threshold: int
-    max_long_tracks_threshold: int
-    max_dense_tracks_threshold: int
-    long_duration_threshold: float
-    high_density_threshold: int
     composite_motion_threshold: int
     min_motion_threshold: int
     motion_frames_weight: float
@@ -65,8 +54,6 @@ class ProcessingConfig:
     # Motion detection
     motion_method: str
     motion_var_threshold: int
-    filter_motion_var_threshold: int
-    analysis_motion_var_threshold: int
     min_motion_area: int
     max_motion_area: int
     motion_history: int
@@ -84,9 +71,8 @@ class ProcessingConfig:
     anchor_confidence_threshold: float
     min_track_frames: int
     
-    # Step 4 validation
+    # Step 3 validation
     max_validation_frames: int
-    fullframe_weight: float
     temporal_spread_seconds: float
     spatial_overlap_threshold: float
     
@@ -107,47 +93,6 @@ config: ProcessingConfig = None
 # Get loggers
 logger = logging.getLogger('wildcams')
 
-@dataclass
-class Detection:
-    """A single animal detection with metadata."""
-    bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
-    confidence: float
-    frame_idx: int
-    timestamp: float
-    source: str
-    motion_area: Optional[float] = None
-
-@dataclass
-class TrackingInfo:
-    """Tracking information for temporal consistency."""
-    track_id: int
-    detections: List[Detection]
-    start_frame: int
-    end_frame: int
-    duration_seconds: float
-    consistency_score: float
-    
-    def center(self, detection: Detection) -> Tuple[float, float]:
-        """Get center point of detection bbox."""
-        x1, y1, x2, y2 = detection.bbox
-        return ((x1 + x2) / 2, (y1 + y2) / 2)
-    
-    def movement_distance(self) -> float:
-        """Calculate total movement distance of track."""
-        if len(self.detections) < 2:
-            return 0.0
-        
-        total_distance = 0.0
-        for i in range(1, len(self.detections)):
-            prev_center = self.center(self.detections[i-1])
-            curr_center = self.center(self.detections[i])
-            distance = math.sqrt(
-                (curr_center[0] - prev_center[0])**2 + 
-                (curr_center[1] - prev_center[1])**2
-            )
-            total_distance += distance
-        return total_distance
-
 class NextGenVideoProcessor(VideoProcessorBase):
     """Next generation processor with temporal consistency and full-frame validation."""
     
@@ -161,10 +106,10 @@ class NextGenVideoProcessor(VideoProcessorBase):
         self.tracking_dir = self.video_dir / '.tracking'
         self.tracking_dir.mkdir(exist_ok=True)
         
-        # Motion detection configuration for filter (Step 2)
-        self.filter_motion_config = {
+        # Motion detection configuration (single config for all steps)
+        self.motion_config = {
             'method': config.motion_method,
-            'var_threshold': config.filter_motion_var_threshold,
+            'var_threshold': config.motion_var_threshold,
             'min_area': config.min_motion_area,
             'max_area': config.max_motion_area,
             'detect_shadows': True,
@@ -175,41 +120,18 @@ class NextGenVideoProcessor(VideoProcessorBase):
             'max_aspect_ratio': config.max_aspect_ratio,
             'motion_margin': config.motion_margin
         }
-        
-        # Motion detection configuration for spatial analysis (Step 3)
-        self.analysis_motion_config = {
-            'method': config.motion_method,
-            'var_threshold': config.analysis_motion_var_threshold,
-            'min_area': config.min_motion_area,
-            'max_area': config.max_motion_area,
-            'detect_shadows': True,
-            'history': config.motion_history,
-            'max_regions_per_frame': config.max_regions_per_frame,
-            'min_region_width': config.min_region_width,
-            'min_region_height': config.min_region_height,
-            'max_aspect_ratio': config.max_aspect_ratio,
-            'motion_margin': config.motion_margin
-        }
-        
-        # Primary motion config points to filter config for backward compatibility
-        self.motion_config = self.filter_motion_config
         
         # Initialize motion detection algorithm
         self.bg_subtractor = None
         self.init_motion_detector()
         
-        # Tracking state
-        self.active_tracks = []
-        
         # All models used in full-frame analysis
         logger.info(f"💡 ENSEMBLE MODELS:")
         logger.info(f"  🖼️ Full-frame analysis: {self.ensemble_models}")
-        self.next_track_id = 0
         
         logger.info(f"🎯 Next Generation video processor initialized")
         logger.info(f"🕒 Temporal consistency: min {config.min_track_duration}s, motion gap {config.motion_tracking_gap_seconds}s, detection gap {config.detection_validation_gap_seconds}s")
         logger.info(f"🔍 Motion method: {self.motion_config['method']}")
-        logger.info(f"🔀 Dual motion detection: filter_var_threshold={config.filter_motion_var_threshold}, analysis_var_threshold={config.analysis_motion_var_threshold}")
         logger.info(f"✅ Full-frame validation: {config.full_frame_validation_frames} consecutive frames")
     
     def init_motion_detector(self):
@@ -233,20 +155,20 @@ class NextGenVideoProcessor(VideoProcessorBase):
     
     def create_analysis_motion_detector(self):
         """Create separate motion detector for spatial analysis with stricter parameters."""
-        if self.analysis_motion_config['method'] == 'MOG2':
+        if self.motion_config['method'] == 'MOG2':
             return cv2.createBackgroundSubtractorMOG2(
-                detectShadows=self.analysis_motion_config['detect_shadows'],
-                varThreshold=self.analysis_motion_config['var_threshold'],
-                history=self.analysis_motion_config['history']
+                detectShadows=self.motion_config['detect_shadows'],
+                varThreshold=self.motion_config['var_threshold'],
+                history=self.motion_config['history']
             )
-        elif self.analysis_motion_config['method'] == 'KNN':
+        elif self.motion_config['method'] == 'KNN':
             return cv2.createBackgroundSubtractorKNN(
-                detectShadows=self.analysis_motion_config['detect_shadows'],
+                detectShadows=self.motion_config['detect_shadows'],
                 dist2Threshold=400,
-                history=self.analysis_motion_config['history']
+                history=self.motion_config['history']
             )
         else:
-            raise ValueError(f"Unknown motion detection method: {self.analysis_motion_config['method']}")
+            raise ValueError(f"Unknown motion detection method: {self.motion_config['method']}")
     
     def _detect_motion_regions_with_subtractor(self, frame: np.ndarray, bg_subtractor, use_config: str = 'analysis') -> List[Tuple[int, int, int, int]]:
         """Detect motion regions using a specific background subtractor and config."""
@@ -261,8 +183,8 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Find contours
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Select appropriate config based on use case
-        active_config = self.analysis_motion_config if use_config == 'analysis' else self.filter_motion_config
+        # Use unified motion config (dual configs removed)
+        active_config = self.motion_config
         
         motion_regions = []
         for contour in contours:
@@ -359,8 +281,8 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Find contours
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Select appropriate config based on use case
-        active_config = self.analysis_motion_config if use_config == 'analysis' else self.filter_motion_config
+        # Use unified motion config (dual configs removed)
+        active_config = self.motion_config
         
         motion_regions = []
         for contour in contours:
@@ -428,66 +350,6 @@ class NextGenVideoProcessor(VideoProcessorBase):
         return motion_regions
     
     
-    def associate_detections_to_tracks(self, detections: List[Detection], fps: float) -> None:
-        """Associate new detections to existing tracks or create new tracks."""
-        unmatched_detections = list(detections)
-        
-        # Try to match detections to active tracks
-        for track in self.active_tracks:
-            if not track.detections:
-                continue
-                
-            last_detection = track.detections[-1]
-            last_center = track.center(last_detection)
-            
-            best_match = None
-            best_distance = float('inf')
-            
-            for detection in unmatched_detections:
-                curr_center = track.center(detection)
-                distance = math.sqrt(
-                    (curr_center[0] - last_center[0])**2 + 
-                    (curr_center[1] - last_center[1])**2
-                )
-                
-                if distance < config.tracking_distance_threshold and distance < best_distance:
-                    best_distance = distance
-                    best_match = detection
-            
-            if best_match:
-                track.detections.append(best_match)
-                track.end_frame = best_match.frame_idx
-                track.duration_seconds = (track.end_frame - track.start_frame) / fps
-                unmatched_detections.remove(best_match)
-        
-        # Create new tracks for unmatched detections
-        for detection in unmatched_detections:
-            new_track = TrackingInfo(
-                track_id=self.next_track_id,
-                detections=[detection],
-                start_frame=detection.frame_idx,
-                end_frame=detection.frame_idx,
-                duration_seconds=0.0,
-                consistency_score=1.0
-            )
-            self.active_tracks.append(new_track)
-            self.next_track_id += 1
-    
-    def cleanup_old_tracks(self, current_frame: int) -> None:
-        """Remove tracks that haven't been updated recently."""
-        self.active_tracks = [
-            track for track in self.active_tracks
-            if (current_frame - track.end_frame) / fps <= config.motion_tracking_gap_seconds
-        ]
-    
-    def get_valid_tracks(self) -> List[TrackingInfo]:
-        """Get tracks that meet temporal consistency requirements."""
-        valid_tracks = []
-        for track in self.active_tracks:
-            if (track.duration_seconds >= config.min_track_duration and 
-                len(track.detections) >= 2):
-                valid_tracks.append(track)
-        return valid_tracks
     
     def find_consistent_motion_sequences_and_tracks(self, video_path: Path, fps: float, total_frames: int) -> List[Dict]:
         """STEP 1: Find sequences with consistent motion/tracking."""
@@ -696,270 +558,338 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         Args:
             video_path: Path to video file
-            motion_tracks: List of motion tracks from Step 1-2
+            motion_tracks: List of motion tracks from Step 1-2 (basic motion tracks)
             
         Returns:
             List of validated sequences with spatial overlap confirmation
         """
         cap = cv2.VideoCapture(str(video_path))
         fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         validated_results = []
         failed_tracks_data = []  # Capture data from failed tracks for summary
         
         logger.info(f"[STEP3] Running full-frame analysis on {len(motion_tracks)} motion tracks")
         
-        for track in motion_tracks:
-            track_id = track['track_id']
+        # Convert basic motion tracks to extended bbox tracks for spatial validation
+        extended_tracks = []
+        for motion_track in motion_tracks:
+            # Extract motion track data
+            track_id = motion_track['track_id']
+            motion_frames = motion_track['frames']
+            motion_regions = motion_track.get('motion_regions', [])
             
-            # Sample frames from motion track (temporal spread)
-            sample_frames = self._sample_motion_track_frames(track, max_frames=config.max_validation_frames)
+            if not motion_frames:
+                continue
             
-            # Re-run motion detection with stricter analysis parameters for spatial validation
-            analysis_bg_subtractor = self.create_analysis_motion_detector()
-            all_motion_regions = []
+            # Build full video coverage detections using motion regions as bboxes
+            motion_start_frame = min(motion_frames)
+            motion_end_frame = max(motion_frames)
             
-            for frame_idx in sample_frames:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                
-                # Apply analysis motion detection with stricter parameters
-                motion_regions = self._detect_motion_regions_with_subtractor(frame, analysis_bg_subtractor, use_config='analysis')
-                all_motion_regions.extend(motion_regions)
+            # Use motion regions or create default bboxes for motion frames
+            full_detections = []
             
-            # Run full-frame analysis on sampled frames
-            full_frame_detections = []
-            model_contributions = {}
+            # Get representative bbox from motion regions (use first available or default)
+            if motion_regions and len(motion_regions) > 0:
+                # Use first available motion region as representative bbox - convert tuple to list
+                first_region = motion_regions[0][0] if motion_regions[0] else (100, 100, 200, 200)
+                first_known_position = list(first_region)  # Convert tuple to list for .copy()
+                last_region = motion_regions[-1][-1] if motion_regions[-1] else first_region
+                last_known_position = list(last_region)   # Convert tuple to list for .copy()
+            else:
+                # Default bbox if no motion regions available
+                first_known_position = [100, 100, 200, 200]
+                last_known_position = first_known_position[:]  # Make a copy
             
-            for frame_idx in sample_frames:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                
-                timestamp = frame_idx / fps
-                
-                # Log evaluation header with shared context
-                logger.info(f"EVAL | {video_path.stem} | {timestamp:.2f}s | {frame_idx} | track_{track_id}")
-                
-                # Run each model individually and log evaluation as it occurs
-                all_detections = []
-                for model_name in config.ensemble_models:
-                    model_detections = self.ml_ensemble.run_single_model_detection(
-                        model_name, frame, timestamp, frame_idx,
-                        full_frame=frame,
-                        accepted_rtdetr_overlap=config.spatial_overlap_threshold
-                    )
-                    
-                    if model_detections:
-                        for det in model_detections:
-                            det_bbox = det['bbox']
-                            
-                            # Calculate spatial overlap with motion regions
-                            max_overlap = 0.0
-                            best_motion_bbox = None
-                            for motion_region in all_motion_regions:
-                                overlap = self._calculate_bbox_overlap(motion_region, det_bbox)
-                                if overlap > max_overlap:
-                                    max_overlap = overlap
-                                    best_motion_bbox = motion_region
-                            
-                            # Determine spatial validation and threshold status
-                            has_spatial_overlap = max_overlap > 0.0
-                            passes_threshold = max_overlap >= config.spatial_overlap_threshold
-                            overall_score = det['confidence'] * max_overlap if passes_threshold else 0.0
-                            
-                            # Icon and status based on both spatial overlap and threshold
-                            if not has_spatial_overlap:
-                                icon = "❌"
-                                status = "spatial_invalid"
-                            elif passes_threshold:
-                                icon = "✅" 
-                                status = "spatial_valid"
-                            else:
-                                icon = "⚠️"
-                                status = "threshold_failed"
-                            
-                            bbox_str = f"bbox:{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}"
-                            motion_bbox_str = f"motn:{best_motion_bbox[0]:.0f},{best_motion_bbox[1]:.0f},{best_motion_bbox[2]:.0f},{best_motion_bbox[3]:.0f}" if best_motion_bbox else "motn:none"
-                            
-                            # Only log non-passing detections if debug flag is enabled
-                            if passes_threshold or config.debug_show_spatially_invalid:
-                                logger.info(f"{icon} | {model_name} | {bbox_str} | conf:{det['confidence']:.3f} | ovlp:{max_overlap:.3f} | {motion_bbox_str} | scor:{overall_score:.3f} | {status}")
-                            
-                            # Track model contributions for ensemble weighting
-                            if model_name not in model_contributions:
-                                model_contributions[model_name] = {
-                                    'count': 0,
-                                    'max_conf': 0.0,
-                                    'total_conf': 0.0,
-                                    'spatial_valid_count': 0,
-                                    'total_score': 0.0
-                                }
-                            model_contributions[model_name]['count'] += 1
-                            model_contributions[model_name]['max_conf'] = max(model_contributions[model_name]['max_conf'], det['confidence'])
-                            model_contributions[model_name]['total_conf'] += det['confidence']
-                            if passes_threshold:
-                                model_contributions[model_name]['spatial_valid_count'] += 1
-                                model_contributions[model_name]['total_score'] += overall_score
-                                all_detections.append(det)
-                    else:
-                        # Model found no detections - add to model contributions with 0 score
-                        logger.info(f"❌ | {model_name} | none | 0.000 | 0.000 | none | 0.000 | no_detection")
-                        if model_name not in model_contributions:
-                            model_contributions[model_name] = {
-                                'count': 0,
-                                'max_conf': 0.0,
-                                'total_conf': 0.0,
-                                'spatial_valid_count': 0,
-                                'total_score': 0.0
-                            }
-                
-                # Use all_detections for ensemble calculation instead of detections
-                detections = all_detections
-                
-                # Ensemble weighting row: combine ALL model scores (including 0.000 scores)
-                valid_detections = []
-                total_ensemble_score = 0.0
-                valid_model_count = 0
-                
-                # Calculate confidence-weighted ensemble score for THIS FRAME ONLY
-                model_scores = {}
-                model_weights = {}
-                base_weight = 0.1  # Minimum weight for zero/low confidence models
-                frame_valid_model_count = 0
-                
-                # Calculate individual model scores for current frame evaluations
-                for model_name in config.ensemble_models:
-                    # Get this frame's detection results for this model (handle source name variations)
-                    if model_name.startswith('rtdetr-'):
-                        # RT-DETR models have source like 'rtdetr_rtdetr-l' 
-                        frame_detections = [det for det in detections if det.get('source') == f'rtdetr_{model_name}']
-                    else:
-                        frame_detections = [det for det in detections if det.get('source') == model_name]
-                    
-                    if frame_detections:
-                        # Use the best detection from this model on this frame
-                        best_det = max(frame_detections, key=lambda d: d['confidence'])
-                        frame_conf = best_det['confidence']
-                        
-                        # Check if this detection passed spatial validation
-                        passes_validation = False
-                        for motion_region in all_motion_regions:
-                            overlap = self._calculate_bbox_overlap(motion_region, best_det['bbox'])
-                            if overlap >= config.spatial_overlap_threshold:
-                                passes_validation = True
-                                break
-                        
-                        if passes_validation:
-                            frame_valid_model_count += 1
-                        else:
-                            frame_conf = 0.0  # Zero out confidence if spatial validation fails
-                    else:
-                        frame_conf = 0.0
-                    
-                    model_scores[model_name] = frame_conf
-                
-                # Simple ensemble: sum of all spatially valid confidences, normalized by maximum possible
-                # This favors multiple models contributing vs single model
-                total_contributing_conf = sum(model_scores.values())
-                max_possible_conf = len(config.ensemble_models) * 1.0  # Max if all models contribute 1.0
-                total_ensemble_score = total_contributing_conf / max_possible_conf
-                
-                valid_model_count = frame_valid_model_count
-                
-                # Store valid detections with spatial overlap
-                for det in detections:
-                    det_bbox = det['bbox']
-                    max_overlap = 0.0
-                    for motion_region in all_motion_regions:
-                        overlap = self._calculate_bbox_overlap(motion_region, det_bbox)
-                        max_overlap = max(max_overlap, overlap)
-                    
-                    if max_overlap >= config.spatial_overlap_threshold:
-                        det['motion_overlap'] = max_overlap
-                        det['frame_idx'] = frame_idx  # Store frame index for temporal continuity validation
-                        det['timestamp'] = timestamp  # Store timestamp for temporal continuity validation
-                        valid_detections.append(det)
-                
-                # Log ensemble weighting header and row
-                logger.info(f"ENSEMBLE | {video_path.stem} | {timestamp:.2f}s | {frame_idx} | track_{track_id}")
-                
-                # Determine ensemble result and failure reason
-                if total_ensemble_score >= config.confidence_threshold:
-                    ensemble_icon = "✅"
-                    reason = "passed"
-                elif valid_model_count == 0:
-                    ensemble_icon = "❌"
-                    reason = f"no_valid_models"
-                elif len(valid_detections) == 0:
-                    ensemble_icon = "❌" 
-                    reason = f"no_detections"
+            # Backfill: frame 0 to motion_start-1
+            for frame_idx in range(0, motion_start_frame):
+                full_detections.append({
+                    'frame': frame_idx,
+                    'bbox': first_known_position.copy(),
+                    'timestamp': frame_idx / fps,
+                    'motion_detected': False,
+                    'fill_type': 'backfill'
+                })
+            
+            # Motion frames: use actual motion regions or default
+            for i, frame_idx in enumerate(motion_frames):
+                if motion_regions and i < len(motion_regions) and motion_regions[i]:
+                    # Use first region from this frame - convert tuple to list
+                    bbox = list(motion_regions[i][0])
                 else:
-                    ensemble_icon = "❌"
-                    reason = f"low_confidence ({total_ensemble_score:.3f}<{config.confidence_threshold})"
-                
-                logger.info(f"{ensemble_icon} | combined | valid_models={valid_model_count} | ensemble_score={total_ensemble_score:.3f} | valid_detections={len(valid_detections)} | {reason}")
-                
-                full_frame_detections.extend(valid_detections)
+                    # Use default bbox
+                    bbox = first_known_position.copy()
+                    
+                full_detections.append({
+                    'frame': frame_idx,
+                    'bbox': bbox,
+                    'timestamp': frame_idx / fps,
+                    'motion_detected': True,
+                    'fill_type': 'motion'
+                })
             
-            # Calculate average confidence for model contributions
+            # Forward-fill: motion_end+1 to video end
+            for frame_idx in range(motion_end_frame + 1, total_frames):
+                full_detections.append({
+                    'frame': frame_idx,
+                    'bbox': last_known_position.copy(),
+                    'timestamp': frame_idx / fps,
+                    'motion_detected': False,
+                    'fill_type': 'forward_fill'
+                })
+            
+            # Sort detections by frame
+            full_detections.sort(key=lambda x: x['frame'])
+            
+            # Create extended bbox track structure
+            bbox_track = {
+                'track_id': track_id,
+                'detections': full_detections,
+                'start_frame': 0,
+                'end_frame': total_frames - 1,
+                'motion_start_frame': motion_start_frame,
+                'motion_end_frame': motion_end_frame,
+                'first_known_position': first_known_position,
+                'last_known_position': last_known_position
+            }
+            
+            # Create extended track with bbox_track structure
+            extended_track = {
+                'track_id': track_id,
+                'bbox_track': bbox_track,
+                'duration_seconds': motion_track['duration_seconds'],
+                'detection_count': len(motion_frames),
+                'total_coverage_frames': len(full_detections),
+                'motion_frames': len(motion_frames),
+                'original_motion_track': motion_track
+            }
+            
+            extended_tracks.append(extended_track)
+        
+        logger.info(f"[STEP3] Built {len(extended_tracks)} extended tracks from {len(motion_tracks)} motion tracks")
+        
+        # Sample frames for analysis from all tracks (get unique frames)
+        all_sample_frames = set()
+        track_sample_frames = {}  # Store per-track sample frames
+        
+        for track in extended_tracks:
+            sample_frames = self._sample_motion_track_frames(track, max_frames=config.max_validation_frames)
+            track_sample_frames[track['track_id']] = sample_frames
+            all_sample_frames.update(sample_frames)
+        
+        all_sample_frames = sorted(all_sample_frames)
+        logger.info(f"[STEP3] Processing {len(all_sample_frames)} unique frames across {len(extended_tracks)} tracks")
+        
+        # Helper function to get track bbox for any track at any frame
+        def get_track_bbox_for_frame(track_id: int, frame_idx: int) -> tuple:
+            """Get bbox for specific track at specific frame, handling implicit fills."""
+            track = next((t for t in extended_tracks if t['track_id'] == track_id), None)
+            if not track:
+                return None, None, None
+            
+            bbox_track = track['bbox_track']
+            for det in bbox_track['detections']:
+                if det['frame'] == frame_idx:
+                    bbox = det['bbox']
+                    fill_type = det['fill_type']
+                    motion_detected = det['motion_detected']
+                    return bbox, fill_type, motion_detected
+            
+            return None, None, None
+        
+        # Global tracking for all tracks
+        track_detections = {track['track_id']: [] for track in extended_tracks}
+        model_contributions = {}
+        frame_results = []
+        
+        # PHASE 1: Frame-First Processing (your specified algorithm)
+        # We iterate over frames to start because we never want to run detection over the same frame twice
+        for frame_idx in all_sample_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            
+            timestamp = frame_idx / fps
+            logger.info(f"EVAL | {video_path.stem} | {timestamp:.2f}s | {frame_idx}")
+            
+            # Run each model against the frame
+            for model_name in config.ensemble_models:
+                model_detections = self.ml_ensemble.run_single_model_detection(
+                    model_name, frame, timestamp, frame_idx,
+                    full_frame=frame,
+                    accepted_rtdetr_overlap=config.spatial_overlap_threshold
+                )
+                
+                # Initialize model contributions if needed
+                if model_name not in model_contributions:
+                    model_contributions[model_name] = {
+                        'count': 0, 'max_conf': 0.0, 'total_conf': 0.0,
+                        'spatial_valid_count': 0, 'total_score': 0.0
+                    }
+                
+                # Update global model contributions for this frame (once per model)
+                if model_detections:
+                    model_contributions[model_name]['count'] = len(model_detections)
+                    model_contributions[model_name]['max_conf'] = max(det['confidence'] for det in model_detections)
+                    model_contributions[model_name]['total_conf'] = sum(det['confidence'] for det in model_detections)
+                
+                # For each track, determine if there was an overlap above the threshold yielded by the detection
+                # Follow algorithm: for track in tracks: check all detections against this track's bbox
+                for track in extended_tracks:
+                    track_id = track['track_id']
+                    track_bbox, fill_type, motion_detected = get_track_bbox_for_frame(track_id, frame_idx)
+                    
+                    if track_bbox is not None:
+                        overlap_type = 'explicit' if fill_type == 'motion' else f'implicit_{fill_type}'
+                        motion_bbox_str = f"motn:{track_bbox[0]:.0f},{track_bbox[1]:.0f},{track_bbox[2]:.0f},{track_bbox[3]:.0f}"
+                        
+                        overlapping_count = 0
+                        
+                        if model_detections:
+                            for det in model_detections:
+                                det_bbox = det['bbox']
+                                overlap = self._calculate_bbox_overlap(track_bbox, det_bbox)
+                                
+                                if overlap >= config.spatial_overlap_threshold:
+                                    # Log detection with overlap above threshold
+                                    bbox_str = f"bbox:{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}"
+                                    overall_score = det['confidence'] * overlap
+                                    logger.info(f"✅ | {model_name} | {bbox_str} | conf:{det['confidence']:.3f} | ovlp:{overlap:.3f} | {motion_bbox_str} | scor:{overall_score:.3f} | spatial_valid | {overlap_type} | track_{track_id}")
+                                    
+                                    model_contributions[model_name]['spatial_valid_count'] += 1
+                                    model_contributions[model_name]['total_score'] += overall_score
+                                    overlapping_count += 1
+                                    
+                                    # Store valid detection for track evaluation
+                                    det['motion_overlap'] = overlap
+                                    det['frame_idx'] = frame_idx
+                                    det['timestamp'] = timestamp
+                                    det['overlap_type'] = overlap_type
+                                    track_detections[track_id].append(det)
+                                    
+                                elif overlap > 0.0:
+                                    # Log detection with warning
+                                    if config.debug_show_spatially_invalid:
+                                        bbox_str = f"bbox:{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}"
+                                        logger.info(f"⚠️ | {model_name} | {bbox_str} | conf:{det['confidence']:.3f} | ovlp:{overlap:.3f} | {motion_bbox_str} | scor:0.000 | threshold_failed | {overlap_type} | track_{track_id}")
+                                    overlapping_count += 1
+                        
+                        # If no detections overlapped with this track, log summary
+                        if overlapping_count == 0:
+                            if model_detections:
+                                non_overlapping = len(model_detections)
+                                logger.info(f"❌ | {model_name} | {non_overlapping}_detections | conf:0.000 | ovlp:0.000 | {motion_bbox_str} | scor:0.000 | no_overlap | {overlap_type} | track_{track_id}")
+                            else:
+                                logger.info(f"❌ | {model_name} | none | conf:0.000 | ovlp:0.000 | {motion_bbox_str} | scor:0.000 | no_detection | {overlap_type} | track_{track_id}")
+                    else:
+                        # Track has no bbox for this frame
+                        if model_detections:
+                            logger.info(f"❌ | {model_name} | {len(model_detections)}_detections | conf:0.000 | ovlp:0.000 | motn:none | scor:0.000 | no_track_bbox | track_{track_id}")
+                        else:
+                            logger.info(f"❌ | {model_name} | none | conf:0.000 | ovlp:0.000 | motn:none | scor:0.000 | no_detection | track_{track_id}")
+            
+            # Calculate ensemble score for track/frame
+            frame_valid_detections = sum(len(track_detections[tid]) for tid in track_detections if any(d.get('frame_idx') == frame_idx for d in track_detections[tid]))
+            valid_models = [m for m in config.ensemble_models if model_contributions[m].get('spatial_valid_count', 0) > 0]
+            total_contributing_conf = sum(model_contributions[m].get('max_conf', 0) for m in valid_models)
+            
+            if len(config.ensemble_models) == 0:
+                ensemble_score = 0.0
+            else:
+                ensemble_score = total_contributing_conf / len(config.ensemble_models)
+            
+            # Log ensemble
+            if ensemble_score >= config.confidence_threshold:
+                ensemble_icon = "✅"
+                reason = "passed"
+            elif len(valid_models) == 0:
+                ensemble_icon = "❌"
+                reason = "no_valid_models"
+            elif frame_valid_detections == 0:
+                ensemble_icon = "❌"
+                reason = "no_detections"
+            else:
+                ensemble_icon = "❌"
+                reason = f"low_confidence ({ensemble_score:.3f}<{config.confidence_threshold})"
+            
+            logger.info(f"ENSEMBLE | {video_path.stem} | {timestamp:.2f}s | {frame_idx}")
+            logger.info(f"{ensemble_icon} | combined | valid_models={len(valid_models)} | ensemble_score={ensemble_score:.3f} | valid_detections={frame_valid_detections} | {reason}")
+            
+            frame_results.append({
+                'frame_idx': frame_idx,
+                'ensemble_score': ensemble_score,
+                'valid_models': len(valid_models),
+                'valid_detections': frame_valid_detections,
+                'passed': ensemble_score >= config.confidence_threshold
+            })
+        
+        # PHASE 2: Track-Level Evaluation
+        validated_results = []
+        failed_tracks_data = []
+        
+        # Now collect all track statistics and evaluate against parameters to see if we have any viable tracks
+        for track in extended_tracks:
+            track_id = track['track_id']
+            track_duration = track['duration_seconds']
+            full_frame_detections = track_detections[track_id]
+            
+            # Calculate average confidence for model contributions for this track
+            track_model_contributions = {}
             for source in model_contributions:
                 if model_contributions[source]['count'] > 0:
-                    model_contributions[source]['avg_conf'] = model_contributions[source]['total_conf'] / model_contributions[source]['count']
+                    track_model_contributions[source] = model_contributions[source].copy()
+                    track_model_contributions[source]['avg_conf'] = model_contributions[source]['total_conf'] / model_contributions[source]['count']
             
-            # Determine if track passes validation
             if full_frame_detections:
-                # Calculate ensemble-based combined score (sum of all spatially valid detections)
+                # Calculate track-level statistics
                 summed_confidence = sum(d['confidence'] for d in full_frame_detections)
                 avg_confidence = summed_confidence / len(full_frame_detections)
                 max_confidence = max(d['confidence'] for d in full_frame_detections)
-                
-                # New scoring: use summed confidence normalized by track duration
-                track_duration = track['duration_seconds']
                 duration_normalized_score = summed_confidence / max(1.0, track_duration)
-                
-                # Use summed confidence as the combined score (not just max)
                 combined_score = summed_confidence
                 
-                # Track validation requires confidence, minimum frames, AND temporal continuity
+                # Count successful frame evaluations for this track
+                track_frames = track_sample_frames[track_id]
+                passed_frames = sum(1 for fr in frame_results if fr['frame_idx'] in track_frames and fr['passed'])
+                total_frames_evaluated = len(track_frames)
+                frame_success_rate = passed_frames / max(1, total_frames_evaluated)
+                
+                # Track validation criteria
                 confidence_passed = combined_score >= config.confidence_threshold
                 frames_passed = len(full_frame_detections) >= config.min_track_frames
                 
-                # Check temporal continuity: gaps between validated detections must not exceed detection_validation_gap_seconds
+                # Check temporal continuity
                 temporal_continuity_passed = True
                 if len(full_frame_detections) > 1:
-                    # Get timestamps of validated detections
                     validated_timestamps = sorted([det.get('timestamp', 0.0) for det in full_frame_detections])
-                    
-                    # Check time gaps between consecutive validated detections
                     for i in range(1, len(validated_timestamps)):
                         time_gap = validated_timestamps[i] - validated_timestamps[i-1]
-                        if time_gap > config.detection_validation_gap_seconds:  # Time gap > max allowed means temporal discontinuity
+                        if time_gap > config.detection_validation_gap_seconds:
                             temporal_continuity_passed = False
                             break
                 
+                # Final track validation decision
                 validation_passed = confidence_passed and frames_passed and temporal_continuity_passed
                 
                 # Find best detection for metadata
                 best_detection = max(full_frame_detections, key=lambda d: d['confidence'])
                 
-                # Track evaluation header and row: log the combined results for the track
-                total_models_with_detections = sum(1 for contrib in model_contributions.values() if contrib.get('spatial_valid_count', 0) > 0)
-                total_spatial_valid_detections = sum(contrib.get('spatial_valid_count', 0) for contrib in model_contributions.values())
+                # Count contributing models
+                total_models_with_detections = sum(1 for contrib in track_model_contributions.values() if contrib.get('spatial_valid_count', 0) > 0)
                 
+                # Log track evaluation
                 logger.info(f"TRACK | {video_path.stem} | track_{track_id}")
                 track_icon = "✅" if validation_passed else "❌"
-                logger.info(f"{track_icon} | duration={track_duration:.2f}s | frames={len(sample_frames)} | detections={len(full_frame_detections)} | models_active={total_models_with_detections} | summed_conf={summed_confidence:.3f} | avg_conf={avg_confidence:.3f} | max_conf={max_confidence:.3f} | duration_norm={duration_normalized_score:.3f} | conf_pass={confidence_passed} | frames_pass={frames_passed} | temporal_pass={temporal_continuity_passed} | validated={validation_passed}")
+                logger.info(f"{track_icon} | duration={track_duration:.2f}s | frames_evaluated={total_frames_evaluated} | frames_passed={passed_frames} | success_rate={frame_success_rate:.2f} | detections={len(full_frame_detections)} | models_active={total_models_with_detections} | summed_conf={summed_confidence:.3f} | avg_conf={avg_confidence:.3f} | max_conf={max_confidence:.3f} | duration_norm={duration_normalized_score:.3f} | conf_pass={confidence_passed} | frames_pass={frames_passed} | temporal_pass={temporal_continuity_passed} | validated={validation_passed}")
                 
                 if validation_passed:
                     validated_result = {
                         'track_id': track_id,
                         'best_detection': {
-                            'frame_idx': best_detection.get('frame_idx', sample_frames[0]),
-                            'timestamp': best_detection.get('timestamp', sample_frames[0] / fps),
+                            'frame_idx': best_detection.get('frame_idx', track_frames[0]),
+                            'timestamp': best_detection.get('timestamp', track_frames[0] / fps),
                             'bbox': best_detection['bbox'],
                             'confidence': best_detection['confidence'],
                             'source': f"fullframe_{best_detection['source']}",
@@ -971,10 +901,11 @@ class NextGenVideoProcessor(VideoProcessorBase):
                         'full_frame_avg_score': avg_confidence,
                         'full_frame_max_score': max_confidence,
                         'detection_count': len(full_frame_detections),
-                        'validation_frames': len(sample_frames),
+                        'validation_frames': len(track_frames),
                         'duration_seconds': track['duration_seconds'],
                         'validation_passed': validation_passed,
-                        'model_contributions': model_contributions
+                        'model_contributions': track_model_contributions,
+                        'frame_success_rate': frame_success_rate
                     }
                     validated_results.append(validated_result)
                 else:
@@ -984,15 +915,15 @@ class NextGenVideoProcessor(VideoProcessorBase):
                         'confidence': max_confidence,
                         'combined_score': combined_score,
                         'summed_confidence': summed_confidence,
-                        'detections': len(full_frame_detections)
+                        'detections': len(full_frame_detections),
+                        'frame_success_rate': frame_success_rate
                     })
             else:
-                # Track evaluation header and row for failed track
-                track_duration = track['duration_seconds']
+                # Track evaluation for failed track
                 logger.info(f"TRACK | {video_path.stem} | track_{track_id}")
-                logger.info(f"❌ | duration={track_duration:.2f}s | frames={len(sample_frames)} | detections=0 | models_active=0 | summed_conf=0.000 | avg_conf=0.000 | max_conf=0.000 | duration_norm=0.000 | validated=false")
+                logger.info(f"❌ | duration={track_duration:.2f}s | frames=0 | detections=0 | models_active=0 | summed_conf=0.000 | avg_conf=0.000 | max_conf=0.000 | duration_norm=0.000 | validated=false")
                 
-                # Capture failed track data for summary (no overlap)
+                # Capture failed track data for summary
                 failed_tracks_data.append({
                     'track_id': track_id,
                     'confidence': 0.0,
@@ -1015,26 +946,35 @@ class NextGenVideoProcessor(VideoProcessorBase):
         return passed_results
     
     def _sample_motion_track_frames(self, track: Dict, max_frames: int = 5) -> List[int]:
-        """Sample representative frames from a motion track."""
-        frames = track['frames']
+        """Sample representative frames from a motion track (new structure)."""
+        bbox_track = track.get('bbox_track', track)  # Handle both old and new structure
+        
+        # For new extended track structure, only sample from motion frames
+        if 'detections' in bbox_track:
+            motion_detections = [det for det in bbox_track['detections'] if det['motion_detected']]
+            frames = [det['frame'] for det in motion_detections]
+        else:
+            # Fallback for old structure
+            frames = track.get('frames', [])
+        
         if len(frames) <= max_frames:
             return frames
         
-        # Sample evenly across the track duration
+        # Sample evenly across the track duration 
         step = len(frames) / max_frames
         return [frames[int(i * step)] for i in range(max_frames)]
     
     def _calculate_bbox_overlap(self, motion_bbox: List[float], detection_bbox: List[float]) -> float:
-        """Calculate what percentage of motion region is contained within detection.
+        """Calculate IoU (Intersection over Union) between motion and detection bboxes.
         
         Args:
             motion_bbox: Motion region coordinates [x1, y1, x2, y2]  
             detection_bbox: ML detection coordinates [x1, y1, x2, y2]
             
         Returns:
-            float: Percentage of motion area contained within detection (0.0 to 1.0)
-                  1.0 = motion fully contained within detection
-                  <1.0 = motion extends beyond detection boundaries
+            float: IoU score (0.0 to 1.0)
+                  1.0 = perfect overlap
+                  0.0 = no overlap
         """
         mx1, my1, mx2, my2 = motion_bbox
         dx1, dy1, dx2, dy2 = detection_bbox
@@ -1050,56 +990,15 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         intersection_area = (ix2 - ix1) * (iy2 - iy1)
         motion_area = (mx2 - mx1) * (my2 - my1)
+        detection_area = (dx2 - dx1) * (dy2 - dy1)
+        union_area = motion_area + detection_area - intersection_area
         
-        if motion_area <= 0:
+        if union_area <= 0:
             return 0.0
         
-        # Calculate motion area that falls outside the detection
-        motion_outside_detection = motion_area - intersection_area
-        
-        # Score = 1.0 - (penalty for motion outside detection)
-        # 1.0 = all motion within detection (perfect)
-        # 0.0 = all motion outside detection (terrible)
-        penalty = motion_outside_detection / motion_area
-        return 1.0 - penalty
+        # IoU = intersection / union
+        return intersection_area / union_area
     
-    def _select_validation_frames(self, detections: List[Dict], max_frames: int = 3) -> List[int]:
-        """Select representative frames for validation (temporal spread + high confidence)."""
-        if not detections:
-            return []
-        
-        # Group by frame
-        frame_groups = {}
-        for det in detections:
-            frame_idx = det['frame_idx']
-            if frame_idx not in frame_groups:
-                frame_groups[frame_idx] = []
-            frame_groups[frame_idx].append(det)
-        
-        # Get best detection per frame
-        frame_scores = {}
-        for frame_idx, dets in frame_groups.items():
-            frame_scores[frame_idx] = max(det['confidence'] for det in dets)
-        
-        # Select frames: prioritize high confidence but ensure temporal spread
-        sorted_frames = sorted(frame_scores.items(), key=lambda x: x[1], reverse=True)
-        
-        if len(sorted_frames) <= max_frames:
-            return [f[0] for f in sorted_frames]
-        
-        # Take top frame + spread remaining across time
-        selected = [sorted_frames[0][0]]  # Highest confidence frame
-        remaining_frames = [f[0] for f in sorted_frames[1:]]
-        remaining_frames.sort()  # Sort by time
-        
-        # Add temporally spread frames
-        if len(remaining_frames) > 0 and max_frames > 1:
-            step = len(remaining_frames) / (max_frames - 1)
-            for i in range(1, max_frames):
-                idx = min(int((i-1) * step), len(remaining_frames) - 1)
-                selected.append(remaining_frames[idx])
-        
-        return sorted(selected)
     
     def build_temporal_tracks(self, all_detections_by_frame: Dict, fps: float) -> List[Dict]:
         """Build temporal tracks using DeepSORT for consistency filtering."""
@@ -1116,11 +1015,11 @@ class NextGenVideoProcessor(VideoProcessorBase):
             logger.warning("⚠️ DeepSORT not available - falling back to simple bbox linking")
         
         if deepsort_available:
-            return self._build_tracks_with_deepsort(all_detections_by_frame, fps)
+            return self._build_tracks_with_deepsort(all_detections_by_frame, fps, total_frames)
         else:
-            return self._build_tracks_simple_linking(all_detections_by_frame, fps)
+            return self._build_tracks_simple_linking(all_detections_by_frame, fps, total_frames)
     
-    def _build_tracks_with_deepsort(self, all_detections_by_frame: Dict, fps: float) -> List[Dict]:
+    def _build_tracks_with_deepsort(self, all_detections_by_frame: Dict, fps: float, total_frames: int) -> List[Dict]:
         """Build tracks using DeepSORT for robust temporal consistency."""
         from deep_sort_realtime import DeepSort
         
@@ -1172,34 +1071,82 @@ class NextGenVideoProcessor(VideoProcessorBase):
                         tracks_by_id[track_id]['confidences'].append(track.get_det_conf())
                         tracks_by_id[track_id]['timestamps'].append(frame_idx / fps)
         
-        # Convert to consistent bbox sequences format
+        # Convert to consistent bbox sequences format with full video extension
         consistent_sequences = []
         for track_id, track_data in tracks_by_id.items():
             if len(track_data['frames']) >= config.min_track_frames:
                 duration = (max(track_data['frames']) - min(track_data['frames'])) / fps
                 if duration >= config.min_track_duration:
+                    # Motion detection boundaries
+                    motion_start_frame = min(track_data['frames'])
+                    motion_end_frame = max(track_data['frames'])
+                    first_known_position = track_data['bboxes'][0]  # First detected position
+                    last_known_position = track_data['bboxes'][-1]  # Last detected position
+                    
+                    # Create full video coverage detections
+                    full_detections = []
+                    
+                    # Backfill: frame 0 to motion_start-1 using first_known_position
+                    for frame_idx in range(0, motion_start_frame):
+                        full_detections.append({
+                            'frame': frame_idx,
+                            'bbox': first_known_position.copy(),
+                            'timestamp': frame_idx / fps,
+                            'motion_detected': False,
+                            'fill_type': 'backfill'
+                        })
+                    
+                    # Actual motion detections
+                    for i, frame_idx in enumerate(track_data['frames']):
+                        full_detections.append({
+                            'frame': frame_idx,
+                            'bbox': track_data['bboxes'][i].copy(),
+                            'timestamp': track_data['timestamps'][i],
+                            'motion_detected': True,
+                            'fill_type': 'motion'
+                        })
+                    
+                    # Forward-fill: motion_end+1 to video end using last_known_position
+                    for frame_idx in range(motion_end_frame + 1, total_frames):
+                        full_detections.append({
+                            'frame': frame_idx,
+                            'bbox': last_known_position.copy(),
+                            'timestamp': frame_idx / fps,
+                            'motion_detected': False,
+                            'fill_type': 'forward_fill'
+                        })
+                    
+                    # Sort detections by frame
+                    full_detections.sort(key=lambda x: x['frame'])
+                    
                     bbox_track = {
                         'track_id': track_id,
-                        'frames': track_data['frames'],
-                        'bboxes': track_data['bboxes'],
-                        'confidences': track_data['confidences'],
-                        'start_frame': min(track_data['frames']),
-                        'end_frame': max(track_data['frames'])
+                        'detections': full_detections,
+                        'start_frame': 0,  # Always video start
+                        'end_frame': total_frames - 1,  # Always video end
+                        'motion_start_frame': motion_start_frame,
+                        'motion_end_frame': motion_end_frame,
+                        'first_known_position': first_known_position,
+                        'last_known_position': last_known_position
                     }
                     
                     consistent_sequences.append({
                         'bbox_track': bbox_track,
                         'duration_seconds': duration,
                         'detection_count': len(track_data['frames']),
+                        'total_coverage_frames': len(full_detections),
+                        'motion_frames': len(track_data['frames']),
+                        'backfill_frames': motion_start_frame,
+                        'forward_fill_frames': total_frames - motion_end_frame - 1,
                         'avg_confidence': sum(track_data['confidences']) / len(track_data['confidences']),
                         'max_confidence': max(track_data['confidences']),
-                        'tracking_method': 'deepsort'
+                        'tracking_method': 'deepsort_extended'
                     })
         
         logger.info(f"🎯 DeepSORT generated {len(consistent_sequences)} valid tracks from {len(tracks_by_id)} total tracks")
         return consistent_sequences
     
-    def _build_tracks_simple_linking(self, all_detections_by_frame: Dict, fps: float) -> List[Dict]:
+    def _build_tracks_simple_linking(self, all_detections_by_frame: Dict, fps: float, total_frames: int) -> List[Dict]:
         """Fallback: Simple bbox linking without DeepSORT."""
         logger.info("🔗 Using simple bbox linking (DeepSORT fallback)")
         
@@ -1259,13 +1206,70 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 # Check if track meets minimum requirements
                 duration = (track['end_frame'] - track['start_frame']) / fps
                 if len(track['frames']) >= config.min_track_frames and duration >= config.min_track_duration:
+                    # Create extended track structure with backfill/forward-fill
+                    motion_start_frame = track['start_frame']
+                    motion_end_frame = track['end_frame']
+                    first_known_position = track['bboxes'][0]
+                    last_known_position = track['bboxes'][-1]
+                    
+                    # Create full video coverage detections
+                    full_detections = []
+                    
+                    # Backfill: frame 0 to motion_start-1
+                    for frame_idx in range(0, motion_start_frame):
+                        full_detections.append({
+                            'frame': frame_idx,
+                            'bbox': first_known_position.copy(),
+                            'timestamp': frame_idx / fps,
+                            'motion_detected': False,
+                            'fill_type': 'backfill'
+                        })
+                    
+                    # Actual motion detections
+                    for i, frame_idx in enumerate(track['frames']):
+                        full_detections.append({
+                            'frame': frame_idx,
+                            'bbox': track['bboxes'][i].copy(),
+                            'timestamp': frame_idx / fps,
+                            'motion_detected': True,
+                            'fill_type': 'motion'
+                        })
+                    
+                    # Forward-fill: motion_end+1 to video end
+                    for frame_idx in range(motion_end_frame + 1, total_frames):
+                        full_detections.append({
+                            'frame': frame_idx,
+                            'bbox': last_known_position.copy(),
+                            'timestamp': frame_idx / fps,
+                            'motion_detected': False,
+                            'fill_type': 'forward_fill'
+                        })
+                    
+                    # Sort detections by frame
+                    full_detections.sort(key=lambda x: x['frame'])
+                    
+                    extended_track = {
+                        'track_id': track['track_id'],
+                        'detections': full_detections,
+                        'start_frame': 0,
+                        'end_frame': total_frames - 1,
+                        'motion_start_frame': motion_start_frame,
+                        'motion_end_frame': motion_end_frame,
+                        'first_known_position': first_known_position,
+                        'last_known_position': last_known_position
+                    }
+                    
                     tracks.append({
-                        'bbox_track': track,
+                        'bbox_track': extended_track,
                         'duration_seconds': duration,
                         'detection_count': len(track['frames']),
+                        'total_coverage_frames': len(full_detections),
+                        'motion_frames': len(track['frames']),
+                        'backfill_frames': motion_start_frame,
+                        'forward_fill_frames': total_frames - motion_end_frame - 1,
                         'avg_confidence': sum(track['confidences']) / len(track['confidences']),
                         'max_confidence': max(track['confidences']),
-                        'tracking_method': 'simple_linking'
+                        'tracking_method': 'simple_linking_extended'
                     })
                 
                 track_id_counter += 1
@@ -1515,8 +1519,10 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     self.mark_video_processed(video_path, None, success=False)
                     
             except Exception as e:
+                import traceback
                 logger.error(f"VIDEO ERROR: {video_path.name} - {str(e)}")
                 logger.error(f"❌ {video_path.name}: Processing failed - {str(e)}")
+                logger.error(f"Full traceback:\n{traceback.format_exc()}")
                 # Don't mark failed videos as processed - they should be retried
         
         # Generate detailed final summary
@@ -1873,18 +1879,7 @@ def initialize_config_from_args(args) -> None:
         max_frames_per_video=args.max_frames,
         confidence_threshold=args.confidence_threshold,
         
-        # Validation thresholds
-        megadetector_high_conf=args.megadetector_high_conf,
-        yolo_high_conf=args.yolo_high_conf,
-        min_yolo_detections=args.min_yolo_detections,
-        weak_evidence_threshold=args.weak_evidence_threshold,
-        
         # Camera handling detection
-        max_tracks_threshold=20,  # Legacy parameter
-        max_long_tracks_threshold=10,  # Legacy parameter  
-        max_dense_tracks_threshold=5,  # Legacy parameter
-        long_duration_threshold=300.0,  # Legacy parameter
-        high_density_threshold=200,  # Legacy parameter
         composite_motion_threshold=args.composite_motion_threshold,
         min_motion_threshold=args.min_motion_threshold,
         motion_frames_weight=args.motion_frames_weight,
@@ -1895,8 +1890,6 @@ def initialize_config_from_args(args) -> None:
         # Motion detection
         motion_method=args.motion_method,
         motion_var_threshold=args.motion_var_threshold,
-        filter_motion_var_threshold=args.filter_motion_var_threshold or args.motion_var_threshold,
-        analysis_motion_var_threshold=args.analysis_motion_var_threshold or args.motion_var_threshold,
         min_motion_area=args.min_motion_area,
         max_motion_area=args.max_motion_area,
         motion_history=args.motion_history,
@@ -1914,9 +1907,8 @@ def initialize_config_from_args(args) -> None:
         anchor_confidence_threshold=args.anchor_confidence_threshold,
         min_track_frames=args.min_track_frames,
         
-        # Step 4 validation
+        # Step 3 validation
         max_validation_frames=args.max_validation_frames,
-        fullframe_weight=args.fullframe_weight,
         temporal_spread_seconds=args.temporal_spread_seconds,
         spatial_overlap_threshold=args.spatial_overlap_threshold,
         
@@ -1988,7 +1980,9 @@ def main():
     except KeyboardInterrupt:
         print("🛑 Processing interrupted by user")
     except Exception as e:
+        import traceback
         print(f"❌ Processing failed: {e}")
+        print(f"Full traceback:\n{traceback.format_exc()}")
         sys.exit(1)
 
 if __name__ == "__main__":

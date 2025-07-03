@@ -161,3 +161,52 @@ process -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.40 --min-motion-area
 1. **IMG_0010, IMG_0011**: True positives failing ML validation - investigate Step 3/4 scoring
 2. **Videos 2, 3, 20**: Determine ground truth status (animals vs false positives)
 3. **Motion threshold tuning**: Consider adjusting insufficient motion threshold (currently 100)
+
+## Test: 2025-07-02 19:17 (Frame-First Algorithm + Coherent Object Tracking + Bug Fixes)
+
+**Rationale:** 
+Major architectural refactoring to implement coherent object tracking with full video coverage and frame-first processing algorithm. Previous experiments showed IMG_0010 and IMG_0011 failing Step 3/4 validation despite having good motion detection. This experiment tests the new architecture with proper spatial overlap validation and track extension.
+
+**Parameters:**
+```bash
+process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-motion-area 300 --motion-var-threshold 32 --min-track-duration 0.1 --spatial-overlap-threshold 0.1
+```
+
+**Major Changes:**
+1. **Frame-First Algorithm**: Refactored Step 3 to process frames first, then models, avoiding duplicate ML runs
+2. **Coherent Object Tracking**: Replaced motion sequences with extended bbox tracks covering full video duration
+3. **Backfill/Forward-Fill**: Tracks extended to video start/end using first/last known positions for spatial validation
+4. **Spatial Overlap Validation**: Enhanced validation with explicit vs implicit overlap logging  
+5. **Bug Fixes**: Fixed tuple-to-list conversion errors in motion region handling
+6. **Parameter Renaming**: `--accepted-rtdetr-overlap` → `--spatial-overlap-threshold`
+7. **Enhanced Stacktraces**: Added full error logging for better debugging
+
+**Results:**
+- **✅ IMG_0010:** **SUCCESS** - Motion passed (score=730), animals detected (conf=0.378, combined=13.149)
+- **✅ IMG_0011:** **SUCCESS** - Motion passed (score=4619), animals detected (conf=0.369, combined=26.849)
+
+**Performance:**
+- IMG_0010: 44.5s processing time
+- IMG_0011: 43.6s processing time  
+- Average: 44.1s per video
+
+**Model Contributions:**
+- **RT-DETR-L**: 6000 detections, max_conf=0.469 (primary detector)
+- **YOLO12M**: 14 detections, max_conf=0.020 (minimal contribution)
+- **YOLO12X**: 14 detections, max_conf=0.037 (minimal contribution) 
+- **MDV6-YOLOv10-E**: 0 detections (no contribution)
+
+**Analysis:**
+🎯 **MAJOR SUCCESS**: Both previously failing videos (IMG_0010, IMG_0011) now successfully detect animals with the new coherent object tracking architecture. The frame-first algorithm and extended track structure resolved the spatial validation issues.
+
+**Key Insights:**
+1. **RT-DETR Dominance**: RT-DETR-L is the primary performing model (6000 detections vs 14 each for YOLO models)
+2. **Spatial Overlap Works**: New spatial validation correctly validates detections against motion regions
+3. **Extended Tracks**: Backfill/forward-fill provides full video coverage for spatial validation
+4. **Architecture Fixed**: Previous Step 3/4 validation failures resolved by coherent tracking approach
+
+**Next Steps:**
+1. Test full batch (all 20 videos) with new architecture
+2. Evaluate if ensemble can be simplified (RT-DETR + 1-2 YOLO models)
+3. Investigate MegaDetector v6 low contribution (0 detections)
+4. Optimize confidence thresholds based on model performance distribution

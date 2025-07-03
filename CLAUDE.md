@@ -117,6 +117,57 @@ The current production system uses an optimized 3-step pipeline that eliminates 
 - **Configurable Thresholds**: All parameters exposed via CLI with no hardcoded defaults
 - **Detailed Logging**: Spatial overlap scores, model contributions, temporal decisions logged for debugging
 
+### Frame-First Full-Frame Analysis Algorithm
+
+The Step 3 full-frame analysis follows a specific algorithm to optimize ML model usage and ensure comprehensive track evaluation:
+
+```python
+# PHASE 1: Frame-First Processing (avoid duplicate ML runs)
+for frame in {sampled frames with sufficient density}:
+    # Run each model against the frame
+    for model in models:
+        detect = run_model_detection(model, frame)
+        
+        # For each detection, determine overlap with ALL tracks
+        for track in tracks:
+            overlap = calculate_overlap(detection.bbox, track.bbox_for_frame)
+            if overlap >= spatial_overlap_threshold:
+                log_detection(✅, model, detection, overlap, track, "spatial_valid")
+            elif overlap > 0:
+                log_detection(⚠️, model, detection, overlap, track, "threshold_failed") 
+            # Note: No logging for zero overlap (spatial_invalid) unless debug enabled
+        
+        # If no detections overlapped with any track
+        if no_detections_overlapped:
+            log_summary(❌, model, f"{num_detections} detections with below threshold overlap")
+    
+    # Calculate ensemble score for this frame across all tracks
+    ensemble_score = calculate_weighted_ensemble_score(all_model_results)
+    log_ensemble(frame, ensemble_score, valid_models, valid_detections, reason)
+
+# PHASE 2: Track-Level Evaluation (collect statistics and validate)
+for track in tracks:
+    # Collect all frame results for this track
+    track_detections = get_validated_detections_for_track(track)
+    track_stats = calculate_track_statistics(track_detections)
+    
+    # Evaluate track validation criteria
+    confidence_passed = track_stats.summed_confidence >= confidence_threshold
+    frames_passed = len(track_detections) >= min_track_frames
+    temporal_continuity_passed = check_temporal_gaps(track_detections, max_gap_seconds)
+    
+    # Final validation decision
+    validation_passed = confidence_passed AND frames_passed AND temporal_continuity_passed
+    log_track_evaluation(✅/❌, track, validation_passed, all_metrics)
+```
+
+**Key Principles:**
+1. **Frame-First**: Process each frame once across all models to avoid duplicate ML runs
+2. **Model-Track Matrix**: Each model's detections checked against ALL tracks for comprehensive overlap analysis  
+3. **Hierarchical Logging**: EVAL (individual) → ENSEMBLE (frame-level) → TRACK (final validation)
+4. **Spatial Validation**: All detections must spatially correlate with motion regions (explicit or implicit via backfill/forward-fill)
+5. **Temporal Continuity**: Final track validation requires detections within temporal gap thresholds
+
 ### False Positive Filtering (Multi-Level)
 **Hardware-Level Detection (Step 2)**:
 - **Camera Handling**: >20 temporal tracks with high density/duration
