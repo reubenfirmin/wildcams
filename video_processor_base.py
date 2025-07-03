@@ -146,8 +146,8 @@ class VideoProcessorBase:
         # Camera handling detection
         parser.add_argument('--detection-density-threshold', type=float, default=15.0,
                            help='Detection density threshold for camera handling detection (default: 15.0)')
-        parser.add_argument('--composite-motion-threshold', type=int, default=3000000,
-                           help='Composite motion threshold for camera handling (default: 3000000)')
+        parser.add_argument('--composite-motion-threshold', type=float, default=8.0,
+                           help='Camera handling detection threshold - higher values indicate camera handling (default: 8.0)')
         parser.add_argument('--min-motion-threshold', type=int, default=100,
                            help='Minimum motion threshold to avoid processing static videos (default: 100)')
         parser.add_argument('--motion-frames-weight', type=float, default=1.2,
@@ -202,8 +202,8 @@ class VideoProcessorBase:
                            help='Minimum track duration in seconds (default: 0.1)')
         parser.add_argument('--motion-tracking-gap-seconds', type=float, default=1.0,
                            help='Maximum time gap for motion track linking in seconds (default: 1.0)')
-        parser.add_argument('--detection-validation-gap-seconds', type=float, default=0.3,
-                           help='Maximum time gap between ML detections for validation in seconds (default: 0.3)')
+        parser.add_argument('--min-consecutive-detection-seconds', type=float, default=0.2,
+                           help='Minimum duration of consecutive detection required for validation (seconds)')
         parser.add_argument('--tracking-distance-threshold', type=float, default=150.0,
                            help='Maximum distance for tracking association in pixels (default: 150.0)')
         parser.add_argument('--full-frame-validation-frames', type=int, default=5,
@@ -226,6 +226,16 @@ class VideoProcessorBase:
                            help='Minimum seconds between selected validation frames (default: 2.0)')
         parser.add_argument('--spatial-overlap-threshold', type=float, default=0.5,
                            help='Minimum spatial overlap threshold between detections and motion regions (default: 0.5)')
+        
+        # Track infilling parameters
+        parser.add_argument('--enable-track-infilling', action='store_true',
+                           help='Enable track infilling to connect nearby tracks (default: False)')
+        parser.add_argument('--infill-max-gap-seconds', type=float, default=2.0,
+                           help='Maximum time gap in seconds to allow infilling between tracks (default: 2.0)')
+        parser.add_argument('--infill-max-distance-pixels', type=float, default=200.0,
+                           help='Maximum spatial distance in pixels to allow infilling between tracks (default: 200.0)')
+        parser.add_argument('--infill-min-overlap-ratio', type=float, default=0.3,
+                           help='Minimum bbox overlap ratio to consider tracks for infilling (default: 0.3)')
         
         # Debug parameters
         parser.add_argument('--debug-show-spatially-invalid', action='store_true',
@@ -259,7 +269,7 @@ class VideoProcessorBase:
         # Temporal consistency parameters
         os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
         os.environ['MOTION_TRACKING_GAP_SECONDS'] = str(args.motion_tracking_gap_seconds)
-        os.environ['DETECTION_VALIDATION_GAP_SECONDS'] = str(args.detection_validation_gap_seconds)
+        os.environ['MIN_CONSECUTIVE_DETECTION_SECONDS'] = str(args.min_consecutive_detection_seconds)
         os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
         os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
         os.environ['ANCHOR_CONFIDENCE_THRESHOLD'] = str(args.anchor_confidence_threshold)
@@ -271,6 +281,12 @@ class VideoProcessorBase:
         os.environ['MAX_VALIDATION_FRAMES'] = str(args.max_validation_frames)
         os.environ['FULLFRAME_WEIGHT'] = str(args.fullframe_weight)
         os.environ['TEMPORAL_SPREAD_SECONDS'] = str(args.temporal_spread_seconds)
+        
+        # Track infilling parameters
+        os.environ['ENABLE_TRACK_INFILLING'] = str(args.enable_track_infilling)
+        os.environ['INFILL_MAX_GAP_SECONDS'] = str(args.infill_max_gap_seconds)
+        os.environ['INFILL_MAX_DISTANCE_PIXELS'] = str(args.infill_max_distance_pixels)
+        os.environ['INFILL_MIN_OVERLAP_RATIO'] = str(args.infill_min_overlap_ratio)
         
         # Debug parameters
         os.environ['DEBUG_SHOW_SPATIALLY_INVALID'] = str(args.debug_show_spatially_invalid)
@@ -294,7 +310,7 @@ class VideoProcessorBase:
             # Temporal consistency parameters
             os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
             os.environ['MOTION_TRACKING_GAP_SECONDS'] = str(args.motion_tracking_gap_seconds)
-            os.environ['DETECTION_VALIDATION_GAP_SECONDS'] = str(args.detection_validation_gap_seconds)
+            os.environ['MIN_CONSECUTIVE_DETECTION_SECONDS'] = str(args.min_consecutive_detection_seconds)
             os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
             os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
     

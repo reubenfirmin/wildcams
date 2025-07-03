@@ -210,3 +210,107 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 2. Evaluate if ensemble can be simplified (RT-DETR + 1-2 YOLO models)
 3. Investigate MegaDetector v6 low contribution (0 detections)
 4. Optimize confidence thresholds based on model performance distribution
+
+## Test: 2025-07-02 19:50 (IoU Overlap Calculation + Frame-First Algorithm) (Log: wildcams_20250702_195044.log)
+
+**Rationale:** 
+Major fix to spatial overlap validation using IoU instead of motion containment. Previous experiments showed RT-DETR generating massive false positive detections with 100% "overlap" scores when huge detections contained small motion regions. Implemented frame-first algorithm and switched from motion containment to Intersection over Union (IoU) for more accurate spatial validation.
+
+**Parameters:**
+```bash
+process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-motion-area 300 --motion-var-threshold 32 --min-track-duration 0.1 --spatial-overlap-threshold 0.1
+```
+
+**Major Changes:**
+1. **IoU Overlap Calculation**: Replaced motion containment with Intersection over Union
+   - **Old**: `intersection / motion_area` (motion region fully contained = 100%)
+   - **New**: `intersection / union_area` (proper IoU scoring)
+2. **Frame-First Algorithm**: Implemented correct loop order (frame → model → track)
+3. **Spatial Validation Fix**: Large detections now get low IoU scores instead of false 100% matches
+4. **Enhanced Logging**: Proper EVAL format with individual detection logging per track
+
+**Results:**
+- **✅ IMG_0011:** **SUCCESS** - Motion passed, animals detected
+- **❌ IMG_0010:** **FAILED** - No consistent animal movement (Step 2 filter)
+
+**IoU Overlap Improvements:**
+- **Previous**: RT-DETR detections showing `ovlp:1.000` for massive frames containing tiny motion regions
+- **Current**: Realistic IoU scores: `ovlp:0.244`, `ovlp:0.133`, `ovlp:0.290` for appropriately sized detections
+- **False Positive Filtering**: 12 detection groups filtered out for `no_overlap` (huge detections with low IoU)
+
+**Model Contributions:**
+- **RT-DETR-L**: 600 detections, max_conf=0.268 (primary detector, but realistic overlap scores)
+- **YOLO12M**: 10 detections, max_conf=0.020 (minimal contribution)
+- **YOLO12X**: 4 detections, max_conf=0.007 (minimal contribution)
+- **MDV6-YOLOv10-E**: 0 detections (no contribution)
+
+**Analysis:**
+🎯 **MAJOR IMPROVEMENT**: IoU-based overlap calculation dramatically improved spatial validation accuracy. RT-DETR detections now show realistic overlap scores (0.1-0.3) instead of false 100% matches. The frame-first algorithm successfully processes each frame once across all models, with proper per-track evaluation.
+
+**Key Insights:**
+1. **IoU Eliminates False Positives**: Massive frame-spanning detections now correctly score as low overlap
+2. **Realistic Spatial Scoring**: Overlap scores now reflect actual geometric relationships
+3. **Algorithm Correctness**: Frame-first implementation follows specification exactly
+4. **Filtering Effectiveness**: 12 detection groups properly filtered for insufficient overlap
+
+**Before/After Comparison:**
+- **Before**: `bbox:204,-3,1254,896` vs `motn:419,735,580,884` = `ovlp:1.000` (FALSE)
+- **After**: Similar massive detection would score `ovlp:0.024` (CORRECT IoU)
+
+**Performance:**
+- Processing maintained at ~45s per video
+- Logging volume significantly reduced due to proper false positive filtering
+- Spatial validation now mathematically sound
+
+**Next Steps:**
+1. Run full batch test (all 20 videos) with corrected IoU overlap
+2. Analyze if `--spatial-overlap-threshold 0.1` is optimal for IoU scoring
+3. Investigate why IMG_0010 fails Step 2 motion filter (should be true positive)
+4. Consider ensemble simplification given RT-DETR dominance and YOLO low contribution
+
+## Test: 2025-07-02 20:15 (Track-Based Ensemble + Synthetic Detections) (Log: wildcams_20250702_201558.log)
+
+**Changes:**
+1. **Combine overlapping detections**: Multiple RT-DETR detections per track → ONE synthetic detection with consensus boosting
+2. **Track-based ensemble**: Per-track scoring instead of frame-global 
+3. **Fixed ensemble math**: `ensemble = best_per_model / num_models` instead of summing all detections
+
+**Results:**
+- IMG_0010: Failed (no change)
+- IMG_0011: Success
+
+**Fixed Issues:**
+- RT-DETR was logging 14 detections per track, inflating ensemble scores
+- Ensemble score was 0.071 (wrong), now 0.020 (correct)
+- Each track now evaluated independently
+
+**Problem:** Still using simple averaging instead of dynamic weighting. RT-DETR conf 0.078 → ensemble 0.078/4 = 0.0195 < 0.4 threshold.
+
+## Test: 2025-07-02 20:27 (Full Batch with Fixed Ensemble Weighting) (Log: wildcams_20250702_202756.log)
+
+**Changes:**
+1. **Restored confidence-weighted ensemble** (accidentally deleted in refactoring)
+2. **Fixed weighting algorithm**: Non-detecting models 10% each, detecting models get 15% floor + confidence-proportional share
+3. **Added parameter TODOs**: Hardcoded weights (10%, 15%) need CLI configuration
+
+**Results:** FULL BATCH (all 20 videos)
+- **✅ Animals detected: 2 videos** 
+- **❌ No animals: 18 videos**
+
+**Critical Issue: 3 False Negatives**
+- **Videos 7, 9, 12**: Known true positives failed detection (should contain animals)
+- **Video 10**: Marginal false negative (borderline case)
+- **Successful videos**: IMG_0008, IMG_0011
+
+**IMG_0007 Failure Analysis:**
+- **Motion Detection**: ✅ 11 tracks, 347 regions, 36.7% frames with motion
+- **ML Detection**: ✅ 131-149 detections per track, conf up to 1.000
+- **Confidence**: ✅ All tracks pass conf_pass=True, frames_pass=True  
+- **FAILURE**: ❌ temporal_pass=False on ALL tracks (gaps > 0.2s between detections)
+- **Root Cause**: `--detection-validation-gap-seconds 0.2` too strict for real animal movement
+
+**Performance:**
+- Total processing time: ~16 minutes (20 videos)
+- Average: ~48s per video
+
+**Key insight:** Fixed ensemble weighting but system now failing to detect known animals. Major regression in sensitivity.
