@@ -211,6 +211,16 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 3. Investigate MegaDetector v6 low contribution (0 detections)
 4. Optimize confidence thresholds based on model performance distribution
 
+## Test: 2025-07-03 05:26 (Inverted Camera Handling Detection) (Log: wildcams_20250703_052556.log)
+
+**Change:** Inverted camera handling logic: spatial_dispersion × motion_sparsity (higher = camera handling). `--composite-motion-threshold` default: 3,000,000 → 8.0.
+
+**Results:**
+- **✅ IMG_0007 (bird):** Score=3.35 → PASSED to full analysis
+- **❌ IMG_0018 (camera handling):** Score=10.83 → BLOCKED as camera handling
+
+**Analysis:** Camera handling detection fixed. Video 18 scored 3.2x higher than Video 7, correctly identifying dispersed camera movement vs concentrated animal movement.
+
 ## Test: 2025-07-02 19:50 (IoU Overlap Calculation + Frame-First Algorithm) (Log: wildcams_20250702_195044.log)
 
 **Rationale:** 

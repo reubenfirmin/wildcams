@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 # Import base processor
 from video_processor_base import VideoProcessorBase
-from ml_detection import MODEL_DETECTION_THRESHOLD
+
 
 # Global configuration object
 @dataclass

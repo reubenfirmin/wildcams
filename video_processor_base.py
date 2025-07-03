@@ -32,12 +32,11 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 import torch
-import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
 from tqdm import tqdm
 
 # Import shared ML detection module
-from ml_detection import MLDetectionEnsemble
+from knowledge.ml_detection import MLDetectionEnsemble
 
 # Load environment variables
 try:
