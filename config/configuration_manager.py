@@ -19,6 +19,8 @@ class ConfigurationManager:
                            help='Comma-separated list of models to use in ensemble. Available: yolov8x,yolov8m,yolov8n,yolov10n,yolov10s,yolov10m,yolov10b,yolov10l,yolov10x,yolo12n,yolo12s,yolo12m,yolo12l,yolo12x,MDV6-yolov9-c,MDV6-yolov9-e,MDV6-yolov10-c,MDV6-yolov10-e,MDV6-rtdetr-c (default: yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c)')
         
         # Processing parameters
+        parser.add_argument('--video-dir', default='./videos',
+                           help='Directory containing videos to process (default: ./videos)')
         parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.25,
                            help='Confidence threshold for detections (default: 0.25)')
         parser.add_argument('--max-frames', type=int, default=20,
@@ -127,19 +129,24 @@ class ConfigurationManager:
         parser.add_argument('--debug-show-spatially-invalid', action='store_true',
                            help='Show spatially invalid detections in logs (default: False)')
     
-    def load_from_cli_args(self, args: List[str], include_motion: bool = True) -> None:
+    def load_from_cli_args(self, args, include_motion: bool = True) -> None:
         """Load configuration directly from command line arguments."""
-        parser = argparse.ArgumentParser(description="Wildlife Video Processing")
-        
-        # Add common arguments
-        self.setup_common_arguments(parser)
-        
-        # Add motion detection arguments if requested
-        if include_motion:
-            self.setup_motion_detection_arguments(parser)
-        
-        # Parse arguments
-        parsed_args = parser.parse_args(args)
+        if isinstance(args, list):
+            # If args is a list of strings, parse them
+            parser = argparse.ArgumentParser(description="Wildlife Video Processing")
+            
+            # Add common arguments
+            self.setup_common_arguments(parser)
+            
+            # Add motion detection arguments if requested
+            if include_motion:
+                self.setup_motion_detection_arguments(parser)
+            
+            # Parse arguments
+            parsed_args = parser.parse_args(args)
+        else:
+            # If args is already a parsed Namespace object, use it directly
+            parsed_args = args
         
         # Create configuration directly from parsed arguments
         self._config = self._create_config_from_args(parsed_args)
@@ -148,11 +155,12 @@ class ConfigurationManager:
         """Create ProcessingConfig directly from parsed CLI arguments."""
         return ProcessingConfig(
             # Video processing
+            video_dir=args.video_dir,
             max_frames_per_video=args.max_frames,
             confidence_threshold=args.confidence_threshold,
             
             # Camera handling detection
-            composite_motion_threshold=int(args.composite_motion_threshold),
+            composite_motion_threshold=args.composite_motion_threshold,
             min_motion_threshold=args.min_motion_threshold,
             motion_frames_weight=args.motion_frames_weight,
             motion_regions_weight=args.motion_regions_weight,
@@ -199,7 +207,23 @@ class ConfigurationManager:
             track_search_seconds=args.track_search_seconds,
             
             # Model configuration
-            ensemble_models=[model.strip() for model in args.ensemble.split(',') if model.strip()]
+            ensemble_models=[model.strip() for model in args.ensemble.split(',') if model.strip()],
+            
+            # Animal validation thresholds  
+            megadetector_high_confidence=args.megadetector_high_conf,
+            yolo_high_confidence=args.yolo_high_conf,
+            min_yolo_detections=args.min_yolo_detections,
+            weak_evidence_threshold=args.weak_evidence_threshold,
+            wildlife_model_confidence=args.wildlife_model_confidence,
+            
+            # Camera handling detection thresholds
+            detection_density_threshold=args.detection_density_threshold,
+            low_confidence_ratio_threshold=args.low_confidence_ratio_threshold,
+            low_confidence_cutoff=args.low_confidence_cutoff,
+            
+            # Clustering parameters
+            clustering_eps=args.clustering_eps,
+            min_samples=args.min_samples
         )
     
     def get_processing_config(self) -> ProcessingConfig:

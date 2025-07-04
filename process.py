@@ -76,7 +76,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         # All models used in full-frame analysis
         logger.info(f"💡 ENSEMBLE MODELS:")
-        logger.info(f"  🖼️ Full-frame analysis: {self.ensemble_models}")
+        logger.info(f"  🖼️ Full-frame analysis: {config.ensemble_models}")
         
         logger.info(f"🎯 Next Generation video processor initialized")
         logger.info(f"🕒 Temporal consistency: min {config.min_track_duration}s, motion gap {config.motion_tracking_gap_seconds}s, min consecutive detection {config.min_consecutive_detection_seconds}s")
@@ -1247,6 +1247,16 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     track_model_contributions[source] = model_contributions[source].copy()
                     track_model_contributions[source]['avg_conf'] = model_contributions[source]['total_conf'] / model_contributions[source]['count']
             
+            # Get the actual ensemble scores for this track from frame results
+            track_ensemble_scores = []
+            for frame_result in frame_results:
+                for track_result in frame_result['track_results']:
+                    if track_result['track_id'] == track_id:
+                        track_ensemble_scores.append(track_result['ensemble_score'])
+            
+            # Use the highest ensemble score for this track (represents best performance)
+            best_ensemble_score = max(track_ensemble_scores) if track_ensemble_scores else 0.0
+            
             if full_frame_detections:
                 # Calculate track-level statistics
                 summed_confidence = sum(d['confidence'] for d in full_frame_detections)
@@ -1343,6 +1353,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                             'source': f"fullframe_{best_detection['source']}",
                             'motion_overlap': best_detection.get('motion_overlap', 0.0)
                         },
+                        'ensemble_score': best_ensemble_score,
                         'combined_score': combined_score,
                         'summed_confidence': summed_confidence,
                         'duration_normalized_score': duration_normalized_score,
@@ -2327,9 +2338,9 @@ def initialize_config_from_args(args) -> None:
     """Initialize global config from CLI arguments using ConfigurationManager."""
     global config
     
-    # Create configuration manager and load from CLI args directly
+    # Create configuration manager and pass the already parsed args object
     config_manager = ConfigurationManager()
-    config_manager.load_from_cli_args(sys.argv[1:], include_motion=True)
+    config_manager.load_from_cli_args(args, include_motion=True)
     config = config_manager.get_processing_config()
 
 def main():

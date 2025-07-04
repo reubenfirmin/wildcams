@@ -8,11 +8,12 @@ from typing import List
 class ProcessingConfig:
     """Global configuration for next-generation video processing."""
     # Video processing
+    video_dir: str
     max_frames_per_video: int
     confidence_threshold: float
     
     # Camera handling detection
-    composite_motion_threshold: int
+    composite_motion_threshold: float
     min_motion_threshold: int
     motion_frames_weight: float
     motion_regions_weight: float
@@ -60,3 +61,19 @@ class ProcessingConfig:
     
     # Model configuration
     ensemble_models: List[str]
+    
+    # Animal validation thresholds
+    megadetector_high_confidence: float
+    yolo_high_confidence: float
+    min_yolo_detections: int
+    weak_evidence_threshold: float
+    wildlife_model_confidence: float
+    
+    # Camera handling detection thresholds
+    detection_density_threshold: float
+    low_confidence_ratio_threshold: float
+    low_confidence_cutoff: float
+    
+    # Clustering parameters
+    clustering_eps: float
+    min_samples: int

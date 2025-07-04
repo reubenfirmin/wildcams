@@ -1,7 +1,6 @@
 #!/usr/bin/env -S uv run
 # /// script
 # dependencies = [
-#   "python-dotenv>=1.0.0",
 #   "opencv-python>=4.8.0",
 #   "ultralytics>=8.0.0",
 #   "scikit-learn>=1.3.0",
@@ -17,7 +16,6 @@ Base video processor with common functionality shared between process.py and pro
 Contains video I/O, analysis management, clustering, and reporting functions.
 """
 
-import os
 import sys
 import json
 import logging
@@ -41,12 +39,9 @@ from ml_detection import MLDetectionEnsemble
 # Import new video I/O modules
 from video_io import FrameExtractor, AnalysisWriter, ProcessedVideoTracker
 
-# Load environment variables
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+# Import configuration
+from config import ProcessingConfig
+
 
 # Get loggers
 logger = logging.getLogger(__name__)
@@ -55,9 +50,10 @@ analysis_logger = logging.getLogger('analysis')
 class VideoProcessorBase:
     """Base class for wildlife video processing with common functionality."""
     
-    def __init__(self):
+    def __init__(self, config: ProcessingConfig):
+        
         # Directory setup
-        self.video_dir = Path(os.getenv('VIDEO_DIR', './videos'))
+        self.video_dir = Path(config.video_dir)
         self.output_dir = self.video_dir / 'analysis'
         self.debug_dir = self.output_dir / 'debug_frames'
         self.logs_dir = Path('./logs')
@@ -77,27 +73,6 @@ class VideoProcessorBase:
             shutil.rmtree(self.debug_dir)
         self.debug_dir.mkdir(exist_ok=True)
         
-        # Processing parameters - HIGH QUALITY for wildlife detection
-        self.frame_skip = int(os.getenv('FRAME_SKIP', '15'))  
-        self.confidence_threshold = float(os.getenv('CONFIDENCE_THRESHOLD', '0.1'))
-        self.max_frames_per_video = int(os.getenv('MAX_FRAMES_PER_VIDEO', '20'))
-        self.clustering_eps = float(os.getenv('CLUSTERING_EPS', '0.3'))
-        self.min_samples = int(os.getenv('MIN_SAMPLES', '2'))
-        
-        # Model configuration parameters
-        self.ensemble_models = os.getenv('ENSEMBLE_MODELS').split(',')
-        
-        # Animal validation thresholds
-        self.megadetector_high_conf = float(os.getenv('MEGADETECTOR_HIGH_CONFIDENCE', '0.3'))
-        self.yolo_high_conf = float(os.getenv('YOLO_HIGH_CONFIDENCE', '0.4'))
-        self.min_yolo_detections = int(os.getenv('MIN_YOLO_DETECTIONS', '3'))
-        self.weak_evidence_threshold = float(os.getenv('WEAK_EVIDENCE_THRESHOLD', '0.25'))
-        self.wildlife_model_confidence = float(os.getenv('WILDLIFE_MODEL_CONFIDENCE', '0.2'))
-        
-        # Camera handling detection thresholds
-        self.detection_density_threshold = float(os.getenv('DETECTION_DENSITY_THRESHOLD', '15.0'))
-        self.low_confidence_ratio_threshold = float(os.getenv('LOW_CONFIDENCE_RATIO_THRESHOLD', '0.7'))
-        self.low_confidence_cutoff = float(os.getenv('LOW_CONFIDENCE_CUTOFF', '0.2'))
         
         # Store all extracted features for clustering
         self.all_features = []
@@ -105,7 +80,7 @@ class VideoProcessorBase:
         
         # Initialize I/O components
         self.frame_extractor = FrameExtractor(
-            max_frames=self.max_frames_per_video,
+            max_frames=config.max_frames_per_video,
             sampling_strategy='uniform',
             debug_dir=self.debug_dir
         )
@@ -114,13 +89,13 @@ class VideoProcessorBase:
         
         # Initialize ML detection ensemble after all parameters are set
         self.ml_ensemble = MLDetectionEnsemble(
-            confidence_threshold=self.confidence_threshold,
-            ensemble_models=self.ensemble_models,
+            confidence_threshold=config.confidence_threshold,
+            ensemble_models=config.ensemble_models,
             cache_dir=self.models_cache_dir
         )
         
         # Log model configuration after everything is initialized
-        self._log_model_configuration()
+        self._log_model_configuration(config)
         
         logger.info(f"🎬 Video processor base initialized")
         logger.info(f"📁 Video directory: {self.video_dir}")
@@ -165,13 +140,13 @@ class VideoProcessorBase:
         logger.info(f"📋 Logging initialized - session {timestamp}")
         logger.info(f"📋 Log file: {log_file}")
     
-    def _log_model_configuration(self):
+    def _log_model_configuration(self, config: ProcessingConfig):
         """Log the model configuration."""
         logger.info("=" * 80)
         logger.info("🎯 MODEL CONFIGURATION")
         logger.info("=" * 80)
-        logger.info(f"Ensemble Models: {', '.join(self.ensemble_models)}")
-        logger.info(f"Confidence Threshold: {self.confidence_threshold}")
+        logger.info(f"Ensemble Models: {', '.join(config.ensemble_models)}")
+        logger.info(f"Confidence Threshold: {config.confidence_threshold}")
         logger.info("=" * 80)
     
     def get_unprocessed_videos(self) -> List[Path]:
@@ -195,7 +170,7 @@ class VideoProcessorBase:
         """Extract frames evenly distributed throughout the video for analysis."""
         return self.frame_extractor.extract_frames_from_path(video_path)
     
-    def detect_camera_handling(self, all_detections: List[Dict], frames_processed: int) -> bool:
+    def detect_camera_handling(self, all_detections: List[Dict], frames_processed: int, config: ProcessingConfig) -> bool:
         """
         Detect if this appears to be camera handling/equipment rather than animals.
         Returns True if likely camera handling (should be rejected).
@@ -207,28 +182,28 @@ class VideoProcessorBase:
         detection_density = total_detections / frames_processed
         
         # Count low confidence detections
-        low_conf_detections = [d for d in all_detections if d['confidence'] < self.low_confidence_cutoff]
+        low_conf_detections = [d for d in all_detections if d['confidence'] < config.low_confidence_cutoff]
         low_conf_ratio = len(low_conf_detections) / total_detections
         
         analysis_logger.info(f"CAMERA HANDLING CHECK:")
-        analysis_logger.info(f"  Detection density: {detection_density:.2f} (threshold: {self.detection_density_threshold})")
-        analysis_logger.info(f"  Low confidence ratio: {low_conf_ratio:.3f} (threshold: {self.low_confidence_ratio_threshold})")
+        analysis_logger.info(f"  Detection density: {detection_density:.2f} (threshold: {config.detection_density_threshold})")
+        analysis_logger.info(f"  Low confidence ratio: {low_conf_ratio:.3f} (threshold: {config.low_confidence_ratio_threshold})")
         analysis_logger.info(f"  Total detections: {total_detections}, Frames: {frames_processed}")
         
         # High detection density + lots of low confidence = likely camera handling
-        if (detection_density > self.detection_density_threshold and 
-            low_conf_ratio > self.low_confidence_ratio_threshold):
+        if (detection_density > config.detection_density_threshold and 
+            low_conf_ratio > config.low_confidence_ratio_threshold):
             analysis_logger.info("CAMERA HANDLING DETECTED: High density + low confidence mass")
             return True
         
         # Very high detection density alone is suspicious 
-        if detection_density > self.detection_density_threshold * 2:
+        if detection_density > config.detection_density_threshold * 2:
             analysis_logger.info("CAMERA HANDLING DETECTED: Extremely high detection density")
             return True
         
         return False
     
-    def ensemble_validation(self, all_detections: List[Dict]) -> bool:
+    def ensemble_validation(self, all_detections: List[Dict], config: ProcessingConfig) -> bool:
         """
         Validate detections using ensemble logic across multiple models.
         Returns True if evidence supports real animal presence.
@@ -249,11 +224,11 @@ class VideoProcessorBase:
             
             # Track high confidence detections
             conf = detection['confidence']
-            if source.startswith('megadetector') and conf >= self.megadetector_high_conf:
+            if source.startswith('megadetector') and conf >= config.megadetector_high_confidence:
                 high_conf_detections.append(detection)
-            elif source.startswith(('primary', 'backup')) and conf >= self.yolo_high_conf:
+            elif source.startswith(('primary', 'backup')) and conf >= config.yolo_high_confidence:
                 high_conf_detections.append(detection)
-            elif source.startswith(('deepfaune', 'wildlife')) and conf >= self.wildlife_model_confidence:
+            elif source.startswith(('deepfaune', 'wildlife')) and conf >= config.wildlife_model_confidence:
                 high_conf_detections.append(detection)
         
         analysis_logger.info(f"ENSEMBLE VALIDATION: Source counts: {source_counts}")
@@ -264,7 +239,7 @@ class VideoProcessorBase:
         
         # Moderate evidence: YOLO models with sufficient detections
         yolo_detections = sum(source_counts.get(s, 0) for s in source_counts if s.startswith(('primary', 'backup')))
-        moderate_evidence = yolo_detections >= self.min_yolo_detections
+        moderate_evidence = yolo_detections >= config.min_yolo_detections
         
         # Weak evidence: Any wildlife-specific model detection
         wildlife_evidence = any(s.startswith(('megadetector', 'deepfaune', 'wildlife')) for s in source_counts)
@@ -278,11 +253,11 @@ class VideoProcessorBase:
         elif wildlife_evidence:
             # Check if weak evidence meets threshold
             avg_confidence = np.mean([d['confidence'] for d in all_detections])
-            if avg_confidence >= self.weak_evidence_threshold:
-                analysis_logger.info(f"ENSEMBLE VALIDATION: WEAK evidence accepted - avg conf {avg_confidence:.3f} >= {self.weak_evidence_threshold}")
+            if avg_confidence >= config.weak_evidence_threshold:
+                analysis_logger.info(f"ENSEMBLE VALIDATION: WEAK evidence accepted - avg conf {avg_confidence:.3f} >= {config.weak_evidence_threshold}")
                 return True
             else:
-                analysis_logger.info(f"ENSEMBLE VALIDATION: WEAK evidence rejected - avg conf {avg_confidence:.3f} < {self.weak_evidence_threshold}")
+                analysis_logger.info(f"ENSEMBLE VALIDATION: WEAK evidence rejected - avg conf {avg_confidence:.3f} < {config.weak_evidence_threshold}")
                 return False
         else:
             analysis_logger.info("ENSEMBLE VALIDATION: Insufficient evidence - rejected")
@@ -374,7 +349,7 @@ class VideoProcessorBase:
             analysis_logger.error(f"FEATURE EXTRACTION: Error extracting features: {e}")
             return None
     
-    def cluster_animal_videos(self, video_metadata: List[Dict]) -> Dict:
+    def cluster_animal_videos(self, video_metadata: List[Dict], config: ProcessingConfig) -> Dict:
         """Cluster videos with similar animal features."""
         if len(self.all_features) < 2:
             analysis_logger.info("CLUSTERING: Not enough features for clustering")
@@ -394,7 +369,7 @@ class VideoProcessorBase:
                 analysis_logger.info(f"CLUSTERING: Applied PCA, reduced to {features_scaled.shape[1]} dimensions")
             
             # Perform DBSCAN clustering
-            clustering = DBSCAN(eps=self.clustering_eps, min_samples=self.min_samples)
+            clustering = DBSCAN(eps=config.clustering_eps, min_samples=config.min_samples)
             cluster_labels = clustering.fit_predict(features_scaled)
             
             analysis_logger.info(f"CLUSTERING: Found {len(set(cluster_labels))} clusters (including noise)")
