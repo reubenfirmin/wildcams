@@ -38,6 +38,9 @@ from tqdm import tqdm
 # Import shared ML detection module
 from ml_detection import MLDetectionEnsemble
 
+# Import new video I/O modules
+from video_io import FrameExtractor, AnalysisWriter, ProcessedVideoTracker
+
 # Load environment variables
 try:
     from dotenv import load_dotenv
@@ -100,6 +103,15 @@ class VideoProcessorBase:
         self.all_features = []
         self.video_metadata = []
         
+        # Initialize I/O components
+        self.frame_extractor = FrameExtractor(
+            max_frames=self.max_frames_per_video,
+            sampling_strategy='uniform',
+            debug_dir=self.debug_dir
+        )
+        self.analysis_writer = AnalysisWriter(self.output_dir)
+        self.processed_tracker = ProcessedVideoTracker(self.video_dir)
+        
         # Initialize ML detection ensemble after all parameters are set
         self.ml_ensemble = MLDetectionEnsemble(
             confidence_threshold=self.confidence_threshold,
@@ -114,204 +126,6 @@ class VideoProcessorBase:
         logger.info(f"📁 Video directory: {self.video_dir}")
         logger.info(f"📊 Analysis output: {self.output_dir}")
         logger.info(f"📋 Logs directory: {self.logs_dir}")
-    
-    @staticmethod
-    def setup_common_arguments(parser):
-        """Add common arguments to an argument parser."""
-        # Model configuration  
-        parser.add_argument('--ensemble', '-e', default='yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c',
-                           help='Comma-separated list of models to use in ensemble. Available: yolov8x,yolov8m,yolov8n,yolov10n,yolov10s,yolov10m,yolov10b,yolov10l,yolov10x,yolo12n,yolo12s,yolo12m,yolo12l,yolo12x,MDV6-yolov9-c,MDV6-yolov9-e,MDV6-yolov10-c,MDV6-yolov10-e,MDV6-rtdetr-c (default: yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c)')
-        
-        # Processing parameters
-        parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.25,
-                           help='Confidence threshold for detections (default: 0.25)')
-        parser.add_argument('--max-frames', type=int, default=20,
-                           help='Maximum frames to extract per video (default: 20)')
-        parser.add_argument('--frame-skip', type=int, default=15,
-                           help='Frame skip for video processing (default: 15)')
-        
-        # Validation thresholds
-        parser.add_argument('--megadetector-high-conf', type=float, default=0.3,
-                           help='High confidence threshold for MegaDetector (default: 0.3)')
-        parser.add_argument('--yolo-high-conf', type=float, default=0.4,
-                           help='High confidence threshold for YOLO models (default: 0.4)')
-        parser.add_argument('--min-yolo-detections', type=int, default=3,
-                           help='Minimum YOLO detections for validation (default: 3)')
-        parser.add_argument('--weak-evidence-threshold', type=float, default=0.25,
-                           help='Threshold for weak evidence validation (default: 0.25)')
-        parser.add_argument('--wildlife-model-confidence', type=float, default=0.2,
-                           help='Confidence threshold for wildlife-specific models (default: 0.2)')
-        
-        # Camera handling detection
-        parser.add_argument('--detection-density-threshold', type=float, default=15.0,
-                           help='Detection density threshold for camera handling detection (default: 15.0)')
-        parser.add_argument('--composite-motion-threshold', type=float, default=0.5,
-                           help='Camera handling detection threshold - higher values indicate camera handling (default: 0.5)')
-        parser.add_argument('--min-motion-threshold', type=int, default=100,
-                           help='Minimum motion threshold to avoid processing static videos (default: 100)')
-        parser.add_argument('--motion-frames-weight', type=float, default=1.2,
-                           help='Weight exponent for motion frames in composite score (default: 1.2)')
-        parser.add_argument('--motion-regions-weight', type=float, default=1.1,
-                           help='Weight exponent for motion regions in composite score (default: 1.1)')
-        parser.add_argument('--motion-tracks-weight', type=float, default=1.0,
-                           help='Weight exponent for motion tracks in composite score (default: 1.0)')
-        parser.add_argument('--large-region-multiplier', type=float, default=15.0,
-                           help='Multiplier for large region percentage in composite score (default: 15.0)')
-        parser.add_argument('--low-confidence-ratio-threshold', type=float, default=0.7,
-                           help='Low confidence ratio threshold for camera handling (default: 0.7)')
-        parser.add_argument('--low-confidence-cutoff', type=float, default=0.2,
-                           help='Low confidence cutoff for camera handling detection (default: 0.2)')
-        
-        # Clustering parameters
-        parser.add_argument('--clustering-eps', type=float, default=0.3,
-                           help='DBSCAN eps parameter for clustering (default: 0.3)')
-        parser.add_argument('--min-samples', type=int, default=2,
-                           help='DBSCAN min_samples parameter for clustering (default: 2)')
-    
-    @staticmethod
-    def setup_motion_detection_arguments(parser):
-        """Add motion detection specific arguments to an argument parser."""
-        parser.add_argument('--motion-method', choices=['MOG2', 'KNN'], default='MOG2',
-                           help='Motion detection method (default: MOG2)')
-        parser.add_argument('--motion-var-threshold', type=int, default=32,
-                           help='Motion detection variance threshold - higher = less sensitive (default: 32)')
-        parser.add_argument('--filter-motion-var-threshold', type=int, default=None,
-                           help='Lenient variance threshold for Step 2 motion filter (default: same as motion-var-threshold)')
-        parser.add_argument('--analysis-motion-var-threshold', type=int, default=None,
-                           help='Strict variance threshold for Step 3 spatial analysis (default: same as motion-var-threshold)')
-        parser.add_argument('--min-motion-area', type=int, default=300,
-                           help='Minimum motion area threshold in pixels (default: 2000)')
-        parser.add_argument('--max-motion-area', type=int, default=80000,
-                           help='Maximum motion area threshold in pixels (default: 80000)')
-        parser.add_argument('--motion-history', type=int, default=100,
-                           help='Motion detection background history frames (default: 100)')
-        parser.add_argument('--max-regions-per-frame', type=int, default=10,
-                           help='Maximum motion regions to process per frame (default: 10)')
-        parser.add_argument('--min-region-width', type=int, default=30,
-                           help='Minimum motion region width in pixels (default: 30)')
-        parser.add_argument('--min-region-height', type=int, default=30,
-                           help='Minimum motion region height in pixels (default: 30)')
-        parser.add_argument('--max-aspect-ratio', type=float, default=5.0,
-                           help='Maximum width/height aspect ratio for motion regions (default: 5.0)')
-        parser.add_argument('--motion-margin', type=int, default=30,
-                           help='Margin to expand motion regions for ML context (default: 30)')
-        
-        # Temporal consistency arguments (for Next-Gen processor)
-        parser.add_argument('--min-track-duration', type=float, default=0.1,
-                           help='Minimum track duration in seconds (default: 0.1)')
-        parser.add_argument('--motion-tracking-gap-seconds', type=float, default=1.0,
-                           help='Maximum time gap for motion track linking in seconds (default: 1.0)')
-        parser.add_argument('--min-consecutive-detection-seconds', type=float, default=0.2,
-                           help='Minimum duration of consecutive detection required for validation (seconds)')
-        parser.add_argument('--tracking-distance-threshold', type=float, default=150.0,
-                           help='Maximum distance for tracking association in pixels (default: 150.0)')
-        parser.add_argument('--full-frame-validation-frames', type=int, default=5,
-                           help='Consecutive frames needed for full-frame validation (default: 5)')
-        parser.add_argument('--anchor-confidence-threshold', type=float, default=0.5,
-                           help='Minimum confidence for anchor point detection (default: 0.5)')
-        parser.add_argument('--min-track-frames', type=int, default=1,
-                           help='Minimum frames required for valid track (default: 1)')
-        parser.add_argument('--track-search-seconds', type=float, default=2.0,
-                           help='Seconds to search backwards/forwards from anchor (default: 2.0)')
-        parser.add_argument('--size-ratio-threshold', type=float, default=0.3,
-                           help='Minimum size ratio for same animal detection (default: 0.3)')
-        
-        # Step 4 full-frame validation parameters
-        parser.add_argument('--max-validation-frames', type=int, default=5,
-                           help='Maximum frames to validate with full ensemble (default: 5)')
-        parser.add_argument('--fullframe-weight', type=float, default=0.4,
-                           help='Weight for full-frame ML scores (default: 0.4)')
-        parser.add_argument('--temporal-spread-seconds', type=float, default=2.0,
-                           help='Minimum seconds between selected validation frames (default: 2.0)')
-        parser.add_argument('--spatial-overlap-threshold', type=float, default=0.5,
-                           help='Minimum spatial overlap threshold between detections and motion regions (default: 0.5)')
-        
-        # Track infilling parameters
-        parser.add_argument('--enable-track-infilling', action='store_true',
-                           help='Enable track infilling to connect nearby tracks (default: False)')
-        parser.add_argument('--infill-max-gap-seconds', type=float, default=2.0,
-                           help='Maximum time gap in seconds to allow infilling between tracks (default: 2.0)')
-        parser.add_argument('--infill-max-distance-pixels', type=float, default=200.0,
-                           help='Maximum spatial distance in pixels to allow infilling between tracks (default: 200.0)')
-        parser.add_argument('--infill-min-overlap-ratio', type=float, default=0.3,
-                           help='Minimum bbox overlap ratio to consider tracks for infilling (default: 0.3)')
-        
-        # Debug parameters
-        parser.add_argument('--debug-show-spatially-invalid', action='store_true',
-                           help='Show spatially invalid detections in logs (default: False)')
-    
-    @staticmethod
-    def set_environment_from_args(args, include_motion=False):
-        """Set environment variables from parsed arguments."""
-        import os
-        os.environ['ENSEMBLE_MODELS'] = args.ensemble
-        os.environ['CONFIDENCE_THRESHOLD'] = str(args.confidence_threshold)
-        os.environ['MAX_FRAMES_PER_VIDEO'] = str(args.max_frames)
-        os.environ['FRAME_SKIP'] = str(args.frame_skip)
-        os.environ['MEGADETECTOR_HIGH_CONFIDENCE'] = str(args.megadetector_high_conf)
-        os.environ['YOLO_HIGH_CONFIDENCE'] = str(args.yolo_high_conf)
-        os.environ['MIN_YOLO_DETECTIONS'] = str(args.min_yolo_detections)
-        os.environ['WEAK_EVIDENCE_THRESHOLD'] = str(args.weak_evidence_threshold)
-        os.environ['WILDLIFE_MODEL_CONFIDENCE'] = str(args.wildlife_model_confidence)
-        os.environ['DETECTION_DENSITY_THRESHOLD'] = str(args.detection_density_threshold)
-        os.environ['COMPOSITE_MOTION_THRESHOLD'] = str(args.composite_motion_threshold)
-        os.environ['MIN_MOTION_THRESHOLD'] = str(args.min_motion_threshold)
-        os.environ['MOTION_FRAMES_WEIGHT'] = str(args.motion_frames_weight)
-        os.environ['MOTION_REGIONS_WEIGHT'] = str(args.motion_regions_weight)
-        os.environ['MOTION_TRACKS_WEIGHT'] = str(args.motion_tracks_weight)
-        os.environ['LARGE_REGION_MULTIPLIER'] = str(args.large_region_multiplier)
-        os.environ['LOW_CONFIDENCE_RATIO_THRESHOLD'] = str(args.low_confidence_ratio_threshold)
-        os.environ['LOW_CONFIDENCE_CUTOFF'] = str(args.low_confidence_cutoff)
-        os.environ['CLUSTERING_EPS'] = str(args.clustering_eps)
-        os.environ['MIN_SAMPLES'] = str(args.min_samples)
-        
-        # Temporal consistency parameters
-        os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
-        os.environ['MOTION_TRACKING_GAP_SECONDS'] = str(args.motion_tracking_gap_seconds)
-        os.environ['MIN_CONSECUTIVE_DETECTION_SECONDS'] = str(args.min_consecutive_detection_seconds)
-        os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
-        os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
-        os.environ['ANCHOR_CONFIDENCE_THRESHOLD'] = str(args.anchor_confidence_threshold)
-        os.environ['MIN_TRACK_FRAMES'] = str(args.min_track_frames)
-        os.environ['TRACK_SEARCH_SECONDS'] = str(args.track_search_seconds)
-        os.environ['SIZE_RATIO_THRESHOLD'] = str(args.size_ratio_threshold)
-        
-        # Step 4 validation parameters
-        os.environ['MAX_VALIDATION_FRAMES'] = str(args.max_validation_frames)
-        os.environ['FULLFRAME_WEIGHT'] = str(args.fullframe_weight)
-        os.environ['TEMPORAL_SPREAD_SECONDS'] = str(args.temporal_spread_seconds)
-        
-        # Track infilling parameters
-        os.environ['ENABLE_TRACK_INFILLING'] = str(args.enable_track_infilling)
-        os.environ['INFILL_MAX_GAP_SECONDS'] = str(args.infill_max_gap_seconds)
-        os.environ['INFILL_MAX_DISTANCE_PIXELS'] = str(args.infill_max_distance_pixels)
-        os.environ['INFILL_MIN_OVERLAP_RATIO'] = str(args.infill_min_overlap_ratio)
-        
-        # Debug parameters
-        os.environ['DEBUG_SHOW_SPATIALLY_INVALID'] = str(args.debug_show_spatially_invalid)
-        
-        # Motion detection specific parameters
-        if include_motion:
-            os.environ['MOTION_METHOD'] = args.motion_method
-            os.environ['MOTION_VAR_THRESHOLD'] = str(args.motion_var_threshold)
-            # Set dual motion thresholds - use main threshold as default if not specified
-            os.environ['FILTER_MOTION_VAR_THRESHOLD'] = str(args.filter_motion_var_threshold or args.motion_var_threshold)
-            os.environ['ANALYSIS_MOTION_VAR_THRESHOLD'] = str(args.analysis_motion_var_threshold or args.motion_var_threshold)
-            os.environ['MIN_MOTION_AREA'] = str(args.min_motion_area)
-            os.environ['MAX_MOTION_AREA'] = str(args.max_motion_area)
-            os.environ['MOTION_HISTORY'] = str(args.motion_history)
-            os.environ['MAX_REGIONS_PER_FRAME'] = str(args.max_regions_per_frame)
-            os.environ['MIN_REGION_WIDTH'] = str(args.min_region_width)
-            os.environ['MIN_REGION_HEIGHT'] = str(args.min_region_height)
-            os.environ['MAX_ASPECT_RATIO'] = str(args.max_aspect_ratio)
-            os.environ['MOTION_MARGIN'] = str(args.motion_margin)
-            
-            # Temporal consistency parameters
-            os.environ['MIN_TRACK_DURATION'] = str(args.min_track_duration)
-            os.environ['MOTION_TRACKING_GAP_SECONDS'] = str(args.motion_tracking_gap_seconds)
-            os.environ['MIN_CONSECUTIVE_DETECTION_SECONDS'] = str(args.min_consecutive_detection_seconds)
-            os.environ['TRACKING_DISTANCE_THRESHOLD'] = str(args.tracking_distance_threshold)
-            os.environ['FULL_FRAME_VALIDATION_FRAMES'] = str(args.full_frame_validation_frames)
     
     def setup_logging(self):
         """Setup single logger to file and console."""
@@ -362,16 +176,7 @@ class VideoProcessorBase:
     
     def get_unprocessed_videos(self) -> List[Path]:
         """Get list of videos that haven't been processed yet."""
-        video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.m4v'}
-        unprocessed = []
-        
-        for video_file in self.video_dir.iterdir():
-            if (video_file.is_file() and 
-                video_file.suffix.lower() in video_extensions and
-                not (video_file.with_suffix('.processed')).exists()):
-                unprocessed.append(video_file)
-        
-        return sorted(unprocessed)
+        return self.processed_tracker.get_unprocessed_videos()
     
     def get_filtered_videos(self, video_filter: List) -> List[Path]:
         """Get filtered videos, ignoring .processed status when filter is provided."""
@@ -379,94 +184,16 @@ class VideoProcessorBase:
             analysis_logger.info("OVERRIDE: Video filter provided - ignoring .processed files and forcing reprocessing")
             logger.info("🔄 Filter provided - forcing reprocessing of specified videos")
             
-            # Get all videos in directory, not just unprocessed ones
-            all_videos = list(self.video_dir.glob("*.MP4"))
-            filtered_videos = []
-            
-            for filter_item in video_filter:
-                if isinstance(filter_item, int):
-                    # Filter by video index (e.g. 7 for IMG_0007.MP4)
-                    video_name = f"IMG_{filter_item:04d}.MP4"
-                    matching = [v for v in all_videos if v.name == video_name]
-                    filtered_videos.extend(matching)
-                elif isinstance(filter_item, str):
-                    # Filter by exact video name
-                    matching = [v for v in all_videos if v.name == filter_item]
-                    filtered_videos.extend(matching)
-            
-            return filtered_videos
+            # Convert to string list for ProcessedVideoTracker
+            filter_strings = [str(item) for item in video_filter]
+            return self.processed_tracker.get_filtered_videos(filter_strings)
         else:
             # No filter provided - use normal unprocessed video logic
             return self.get_unprocessed_videos()
     
     def extract_frames(self, video_path: Path) -> Tuple[List[np.ndarray], List[float]]:
         """Extract frames evenly distributed throughout the video for analysis."""
-        frames = []
-        timestamps = []
-        
-        # Try different video reading backends for corrupted files
-        for backend in [cv2.CAP_FFMPEG, cv2.CAP_GSTREAMER, cv2.CAP_ANY]:
-            cap = cv2.VideoCapture(str(video_path), backend)
-            
-            if cap.isOpened():
-                break
-            cap.release()
-        else:
-            logger.error(f"❌ Could not open video with any backend: {video_path}")
-            return frames, timestamps
-        
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        duration = total_frames / fps if fps > 0 else 0
-        
-        if total_frames <= 0:
-            logger.error(f"❌ Invalid frame count for {video_path.name}")
-            cap.release()
-            return frames, timestamps
-        
-        # Calculate frame indices to sample evenly throughout the video
-        frames_to_extract = min(self.max_frames_per_video, total_frames)
-        if frames_to_extract == total_frames:
-            # Extract every frame if video is short
-            target_frame_indices = list(range(total_frames))
-        else:
-            # Calculate evenly spaced frame indices
-            step = total_frames / frames_to_extract
-            target_frame_indices = [int(i * step) for i in range(frames_to_extract)]
-        
-        logger.info(f"🎬 Processing {video_path.name} ({duration:.1f}s, {total_frames} frames)")
-        logger.info(f"📍 Sampling {len(target_frame_indices)} frames evenly throughout video")
-        
-        # Extract frames at target indices
-        for target_idx in target_frame_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, target_idx)
-            ret, frame = cap.read()
-            
-            if ret and frame is not None and frame.size > 0:
-                # Calculate timestamp for this frame
-                timestamp_seconds = target_idx / fps if fps > 0 else 0
-                frames.append(frame)
-                timestamps.append(timestamp_seconds)
-                analysis_logger.info(f"Extracted frame {len(frames)-1}: index={target_idx}, timestamp={timestamp_seconds:.2f}s")
-            else:
-                logger.debug(f"⚠️ Failed to read frame {target_idx}")
-        
-        cap.release()
-        
-        # Save frames to debug directory
-        if frames:
-            video_debug_dir = self.debug_dir / video_path.stem
-            video_debug_dir.mkdir(exist_ok=True)
-            
-            logger.info(f"💾 Saving {len(frames)} frames to debug directory...")
-            for idx, frame in enumerate(frames):
-                frame_path = video_debug_dir / f"frame_{idx:04d}.jpg"
-                cv2.imwrite(str(frame_path), frame)
-            
-            logger.info(f"📸 Successfully extracted {len(frames)} frames")
-            logger.info(f"🛠️ Debug frames saved to: {video_debug_dir}")
-        
-        return frames, timestamps
+        return self.frame_extractor.extract_frames_from_path(video_path)
     
     def detect_camera_handling(self, all_detections: List[Dict], frames_processed: int) -> bool:
         """
@@ -712,25 +439,9 @@ class VideoProcessorBase:
     
     def save_clustering_results(self, clusters: Dict):
         """Save clustering results and feature data."""
-        try:
-            # Save clusters
-            clusters_file = self.output_dir / 'clusters.json'
-            with open(clusters_file, 'w') as f:
-                json.dump(clusters, f, indent=2)
-            
-            # Save features for future analysis
-            features_file = self.output_dir / 'features.pkl'
-            with open(features_file, 'wb') as f:
-                pickle.dump({
-                    'features': self.all_features,
-                    'metadata': self.video_metadata
-                }, f)
-            
-            logger.info(f"💾 Clustering results saved to {clusters_file}")
-            logger.debug(f"💾 Features saved to {features_file}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save clustering results: {e}")
+        # Convert clusters dict to list format expected by AnalysisWriter
+        clusters_list = [clusters] if clusters else []
+        self.analysis_writer.save_clustering_results(clusters_list, self.all_features, self.video_metadata)
     
     def _debug_numpy_objects(self, obj, path=""):
         """Debug helper to find numpy objects in nested data."""
@@ -784,64 +495,12 @@ class VideoProcessorBase:
 
     def save_analysis(self, analysis: Dict, video_path: Path):
         """Save analysis results to JSON file."""
-        analysis_file = self.output_dir / f"{video_path.stem}_analysis.json"
-        
-        try:
-            # Convert all non-JSON types for serialization
-            analysis_copy = self._convert_for_json(analysis)
-            
-            with open(analysis_file, 'w') as f:
-                json.dump(analysis_copy, f, indent=2)
-            logger.debug(f"💾 Saved analysis to {analysis_file}")
-        except Exception as e:
-            logger.error(f"❌ Failed to save analysis: {e}")
-            # Debug: Try to find the problematic data
-            import traceback
-            logger.debug(f"Full traceback: {traceback.format_exc()}")
-            # Try to identify the numpy objects
-            self._debug_numpy_objects(analysis)
+        self.analysis_writer.save_analysis(video_path, analysis)
     
     def mark_as_processed(self, video_path: Path):
         """Create .processed marker file."""
-        marker_file = video_path.with_suffix('.processed')
-        try:
-            marker_file.write_text(datetime.now().isoformat())
-            logger.debug(f"✅ Marked {video_path.name} as processed")
-        except Exception as e:
-            logger.error(f"❌ Failed to create marker file: {e}")
+        self.processed_tracker.mark_as_processed(video_path)
     
     def generate_summary_report(self, all_analyses: List[Dict], clusters: Dict):
         """Generate a summary report of all processed videos."""
-        report_file = self.output_dir / 'processing_summary.json'
-        
-        # Aggregate statistics
-        total_videos = len(all_analyses)
-        videos_with_animals = len([a for a in all_analyses if a.get('animals_detected')])
-        all_animals = set()
-        total_detections = 0
-        
-        for analysis in all_analyses:
-            if analysis.get('animals_detected'):
-                all_animals.update(analysis['animals_detected'])
-                total_detections += analysis.get('detection_count', 0)
-        
-        summary = {
-            'generated_at': datetime.now().isoformat(),
-            'total_videos_processed': total_videos,
-            'videos_with_animals': videos_with_animals,
-            'unique_animal_types': list(all_animals),
-            'total_animal_detections': total_detections,
-            'clusters': clusters,
-            'processing_stats': {
-                'frame_skip': self.frame_skip,
-                'confidence_threshold': self.confidence_threshold,
-                'max_frames_per_video': self.max_frames_per_video
-            }
-        }
-        
-        try:
-            with open(report_file, 'w') as f:
-                json.dump(summary, f, indent=2)
-            logger.info(f"📊 Summary report saved to {report_file}")
-        except Exception as e:
-            logger.error(f"❌ Failed to save summary report: {e}")
+        self.analysis_writer.generate_summary_report(all_analyses)

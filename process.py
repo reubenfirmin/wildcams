@@ -29,69 +29,12 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
-from dataclasses import dataclass
 
 # Import base processor
 from video_processor_base import VideoProcessorBase
 
-
-# Global configuration object
-@dataclass
-class ProcessingConfig:
-    """Global configuration for next-generation video processing."""
-    # Video processing
-    max_frames_per_video: int
-    confidence_threshold: float
-    
-    # Camera handling detection
-    composite_motion_threshold: int
-    min_motion_threshold: int
-    motion_frames_weight: float
-    motion_regions_weight: float
-    motion_tracks_weight: float
-    large_region_multiplier: float
-    
-    # Motion detection
-    motion_method: str
-    motion_var_threshold: int
-    min_motion_area: int
-    max_motion_area: int
-    motion_history: int
-    max_regions_per_frame: int
-    min_region_width: int
-    min_region_height: int
-    max_aspect_ratio: float
-    motion_margin: int
-    
-    # Temporal consistency
-    min_track_duration: float
-    motion_tracking_gap_seconds: float
-    min_consecutive_detection_seconds: float
-    tracking_distance_threshold: float
-    anchor_confidence_threshold: float
-    min_track_frames: int
-    
-    # Step 3 validation
-    max_validation_frames: int
-    temporal_spread_seconds: float
-    spatial_overlap_threshold: float
-    
-    # Track infilling parameters
-    enable_track_infilling: bool
-    infill_max_gap_seconds: float
-    infill_max_distance_pixels: float
-    infill_min_overlap_ratio: float
-    
-    # Debug parameters
-    debug_show_spatially_invalid: bool
-    
-    # Missing parameters that need CLI args
-    full_frame_validation_frames: int
-    size_ratio_threshold: float
-    track_search_seconds: float
-    
-    # Model configuration
-    ensemble_models: List[str]
+# Import new configuration modules
+from config import ProcessingConfig, ConfigurationManager
 
 # Global config instance
 config: ProcessingConfig = None
@@ -103,10 +46,10 @@ class NextGenVideoProcessor(VideoProcessorBase):
     """Next generation processor with temporal consistency and full-frame validation."""
     
     def __init__(self):
-        super().__init__()
+        super().__init__(config)
         
-        # Override base class attributes with config values
-        self.ensemble_models = config.ensemble_models
+        # Override base class attributes with config values (already handled by passing config)
+        # self.ensemble_models = config.ensemble_models  # No longer needed
         
         # Create tracking subdirectory for .processed files
         self.tracking_dir = self.video_dir / '.tracking'
@@ -2381,64 +2324,13 @@ class NextGenVideoProcessor(VideoProcessorBase):
         return (x2 - x1) * (y2 - y1)
 
 def initialize_config_from_args(args) -> None:
-    """Initialize global config from CLI arguments."""
+    """Initialize global config from CLI arguments using ConfigurationManager."""
     global config
     
-    config = ProcessingConfig(
-        # Video processing
-        max_frames_per_video=args.max_frames,
-        confidence_threshold=args.confidence_threshold,
-        
-        # Camera handling detection
-        composite_motion_threshold=args.composite_motion_threshold,
-        min_motion_threshold=args.min_motion_threshold,
-        motion_frames_weight=args.motion_frames_weight,
-        motion_regions_weight=args.motion_regions_weight,
-        motion_tracks_weight=args.motion_tracks_weight,
-        large_region_multiplier=args.large_region_multiplier,
-        
-        # Motion detection
-        motion_method=args.motion_method,
-        motion_var_threshold=args.motion_var_threshold,
-        min_motion_area=args.min_motion_area,
-        max_motion_area=args.max_motion_area,
-        motion_history=args.motion_history,
-        max_regions_per_frame=args.max_regions_per_frame,
-        min_region_width=args.min_region_width,
-        min_region_height=args.min_region_height,
-        max_aspect_ratio=args.max_aspect_ratio,
-        motion_margin=args.motion_margin,
-        
-        # Temporal consistency
-        min_track_duration=args.min_track_duration,
-        motion_tracking_gap_seconds=args.motion_tracking_gap_seconds,
-        min_consecutive_detection_seconds=args.min_consecutive_detection_seconds,
-        tracking_distance_threshold=args.tracking_distance_threshold,
-        anchor_confidence_threshold=args.anchor_confidence_threshold,
-        min_track_frames=args.min_track_frames,
-        
-        # Step 3 validation
-        max_validation_frames=args.max_validation_frames,
-        temporal_spread_seconds=args.temporal_spread_seconds,
-        spatial_overlap_threshold=args.spatial_overlap_threshold,
-        
-        # Track infilling parameters
-        enable_track_infilling=args.enable_track_infilling,
-        infill_max_gap_seconds=args.infill_max_gap_seconds,
-        infill_max_distance_pixels=args.infill_max_distance_pixels,
-        infill_min_overlap_ratio=args.infill_min_overlap_ratio,
-        
-        # Debug parameters
-        debug_show_spatially_invalid=args.debug_show_spatially_invalid,
-        
-        # Additional parameters
-        full_frame_validation_frames=args.full_frame_validation_frames,
-        size_ratio_threshold=args.size_ratio_threshold,
-        track_search_seconds=args.track_search_seconds,
-        
-        # Model configuration
-        ensemble_models=args.ensemble.split(','),
-    )
+    # Create configuration manager and load from CLI args directly
+    config_manager = ConfigurationManager()
+    config_manager.load_from_cli_args(sys.argv[1:], include_motion=True)
+    config = config_manager.get_processing_config()
 
 def main():
     """Main entry point for next-generation processing."""
@@ -2447,11 +2339,12 @@ def main():
     parser = argparse.ArgumentParser(description='Next Generation Wildlife Video Processor with Temporal Consistency')
     parser.add_argument('--videos', '-v', nargs='+', help='Optional list of video indices (e.g. 7 8 9) or names to process')
     
-    # Add common arguments from base class
-    VideoProcessorBase.setup_common_arguments(parser)
+    # Add common arguments from config module
+    config_manager = ConfigurationManager()
+    config_manager.setup_common_arguments(parser)
     
     # Add motion detection arguments (includes temporal consistency for Next-Gen)
-    VideoProcessorBase.setup_motion_detection_arguments(parser)
+    config_manager.setup_motion_detection_arguments(parser)
     
     args = parser.parse_args()
     
@@ -2465,8 +2358,7 @@ def main():
             except ValueError:
                 video_filter.append(video)
     
-    # Set environment variables from arguments (for base class compatibility)
-    VideoProcessorBase.set_environment_from_args(args, include_motion=True)
+    # No need to set environment variables anymore - config is created directly
     
     # Initialize global config from CLI arguments
     initialize_config_from_args(args)
