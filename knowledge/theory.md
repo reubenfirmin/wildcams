@@ -91,6 +91,9 @@ The system uses **spatial overlap validation** with simple confidence thresholdi
 2. **Model Evaluation**: Run each ensemble model on selected full frames
 3. **Spatial Validation**: Require minimum overlap (--spatial-overlap-threshold) between detections and motion regions
 4. **Temporal Consistency**: Validate detection continuity across consecutive frames (--min-consecutive-detection-seconds)
+   - **Confidence Bridge Enhancement**: Medium-confidence frames (≥ --confidence-bridge-threshold, default: 0.6) between high-confidence frames are automatically validated
+   - **Biological Rationale**: Animals don't disappear/reappear; brief confidence dips between strong detections represent the same animal in challenging pose/lighting
+   - **Bridge Algorithm**: For frames that fail ensemble threshold but have medium confidence, if both adjacent frames pass, the middle frame is promoted to "passed"
 5. **Track Validation**: Accept tracks with sufficient validated detections meeting confidence threshold
 
 #### Key Properties
