@@ -712,31 +712,51 @@ class NextGenVideoProcessor(VideoProcessorBase):
                    f"avg_duration:{avg_duration:.2f}s | longest:{longest_track['duration_seconds']:.2f}s (track_{longest_track['track_id']})")
     
     def filter_motion_tracks_for_camera_handling(self, video_path: Path, motion_tracks: List[Dict]) -> List[Dict]:
-        """STEP 2: Filter motion tracks for camera handling detection using weighted composite motion score."""
+        """STEP 2: Filter motion tracks for camera handling detection using frame coverage analysis."""
         logger.info(f"[STEP2] {video_path.name}: Filtering {len(motion_tracks)} motion tracks for camera handling")
         
-        # Calculate motion density: frames × avg bbox area for each track
-        total_motion_density = 0
+        # Get video dimensions for frame coverage calculation
+        cap = cv2.VideoCapture(str(video_path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frame_area = frame_width * frame_height
+        cap.release()
+        
+        # Calculate frame coverage: "everything moves most of the time" = camera handling
+        frames_with_motion = set()
+        total_motion_area_per_frame = {}
+        
         for track in motion_tracks:
-            track_frames = len(track['frames'])
-            
-            # Calculate average bbox area for this track
-            motion_regions = track.get('motion_regions', [])
-            total_area = 0
-            bbox_count = 0
-            
-            for frame_regions in motion_regions:
-                for bbox in frame_regions:
-                    if bbox:
-                        width = bbox[2] - bbox[0]
-                        height = bbox[3] - bbox[1]
-                        area = width * height
-                        total_area += area
-                        bbox_count += 1
-            
-            avg_bbox_area = total_area / bbox_count if bbox_count > 0 else 0
-            track_motion_density = track_frames * (avg_bbox_area / 1000)  # Normalize by 1000 pixels
-            total_motion_density += track_motion_density
+            for frame_idx in track['frames']:
+                frames_with_motion.add(frame_idx)
+                
+                # Get motion regions for this frame in this track
+                motion_regions = track.get('motion_regions', [])
+                if frame_idx < len(motion_regions) and motion_regions[frame_idx]:
+                    frame_area = 0
+                    for bbox in motion_regions[frame_idx]:
+                        if bbox:
+                            width = bbox[2] - bbox[0]
+                            height = bbox[3] - bbox[1]
+                            frame_area += width * height
+                    
+                    if frame_idx not in total_motion_area_per_frame:
+                        total_motion_area_per_frame[frame_idx] = 0
+                    total_motion_area_per_frame[frame_idx] += frame_area
+        
+        # Calculate frame coverage metrics
+        temporal_coverage = len(frames_with_motion) / max(1, total_frames)  # 0.0-1.0
+        
+        avg_spatial_coverage = 0
+        if total_motion_area_per_frame:
+            avg_spatial_coverage = sum(
+                min(1.0, area / total_frame_area) 
+                for area in total_motion_area_per_frame.values()
+            ) / len(total_motion_area_per_frame)
+        
+        # Combined coverage score: high = camera handling
+        frame_coverage_score = temporal_coverage * avg_spatial_coverage
         
         num_tracks = len(motion_tracks)
         
@@ -769,22 +789,17 @@ class NextGenVideoProcessor(VideoProcessorBase):
         large_region_percentage = 0.0
         large_region_multiplier = 1.0
         
-        # INVERTED LOGIC: Camera handling detection
-        # LOW scores = concentrated animal movement (good)
-        # HIGH scores = dispersed camera handling (bad)
+        # Camera handling detection: HIGH scores = camera handling
+        # frame_coverage_score: high = "everything moves most of the time"
+        # spatial_dispersion: high = dispersed movement across frame
         
         # Calculate spatial dispersion: ratio of clusters to tracks
-        # High dispersion (many clusters per track) indicates camera handling
         spatial_dispersion = effective_regions / max(1, num_tracks)
-        
-        # Invert motion density: low density = higher penalty
-        # Camera handling has sparse, erratic movement
-        motion_sparsity = 1.0 / max(1.0, total_motion_density / 1000)  # Normalize and invert
         
         # Calculate composite score for camera handling detection
         # Higher values indicate MORE camera handling characteristics
-        base_score = (spatial_dispersion ** config.motion_regions_weight * 
-                     motion_sparsity ** config.motion_frames_weight * 
+        base_score = (frame_coverage_score ** config.motion_frames_weight * 
+                     spatial_dispersion ** config.motion_regions_weight * 
                      num_tracks ** config.motion_tracks_weight)
         
         composite_score = base_score * consistency_penalty * filtering_penalty
@@ -793,9 +808,9 @@ class NextGenVideoProcessor(VideoProcessorBase):
         threshold = config.composite_motion_threshold
         
         logger.info(f"[STEP2] {video_path.name}: Camera handling score = {composite_score:.6f}")
+        logger.info(f"  📊 Frame coverage: temporal={temporal_coverage:.3f} × spatial={avg_spatial_coverage:.3f} = {frame_coverage_score:.6f}")
         logger.info(f"  📊 Spatial dispersion: {effective_regions}/{num_tracks} = {spatial_dispersion:.3f}")
-        logger.info(f"  📊 Motion density: {total_motion_density:.0f} → sparsity: {motion_sparsity:.6f}")
-        logger.info(f"  📊 Base: dispersion^{config.motion_regions_weight:.1f}={spatial_dispersion:.3f}^{config.motion_regions_weight:.1f} * sparsity^{config.motion_frames_weight:.1f}={motion_sparsity:.6f}^{config.motion_frames_weight:.1f} * tracks^{config.motion_tracks_weight:.1f}={num_tracks}^{config.motion_tracks_weight:.1f} = {base_score:.6f}")
+        logger.info(f"  📊 Base: coverage^{config.motion_frames_weight:.1f}={frame_coverage_score:.6f}^{config.motion_frames_weight:.1f} * dispersion^{config.motion_regions_weight:.1f}={spatial_dispersion:.3f}^{config.motion_regions_weight:.1f} * tracks^{config.motion_tracks_weight:.1f}={num_tracks}^{config.motion_tracks_weight:.1f} = {base_score:.6f}")
         logger.info(f"  📊 Penalties: consistency={consistency_penalty:.2f}x, filtering={filtering_penalty:.2f}x (initial_tracks={initial_track_count}→{num_tracks})")
         logger.info(f"  📊 Spatial clusters: {len(spatial_clusters)} effective regions from {num_tracks} tracks")
         
@@ -851,6 +866,14 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         return clusters
     
+    def _calculate_ensemble_score(self, model_contributions: Dict[str, float]) -> float:
+        """Simple sum: each model contributes at most once per evaluation.
+        Natural range: 0.0 to N (where N = number of models).
+        Inherently rewards multi-model consensus over single-model detection."""
+        return sum(model_contributions.values())
+    
+    
+
     def _calculate_bbox_consistency_penalty(self, spatial_clusters: List[List[Dict]]) -> float:
         """Calculate consistency reward using logarithmic decay for repeated spatial regions."""
         if not spatial_clusters:
@@ -1212,47 +1235,8 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     else:
                         track_model_contributions[model_name] = 0.0
                 
-                # TODO: Pull out ensemble weighting parameters to CLI/config
-                # Calculate track ensemble score with weighted contributions
-                detecting_models = [m for m, conf in track_model_contributions.items() if conf > 0]
-                non_detecting_models = [m for m, conf in track_model_contributions.items() if conf == 0]
-                
-                non_detecting_weight = 0.1   # TODO: Make configurable
-                min_detecting_weight = 0.15  # TODO: Make configurable - floor for low-confidence detecting models
-                
-                track_ensemble_score = 0.0
-                
-                # Non-detecting models get 10% each (× 0 confidence = 0 contribution)
-                for model_name in non_detecting_models:
-                    track_ensemble_score += track_model_contributions[model_name] * non_detecting_weight
-                
-                # Detecting models: confidence-proportional with 15% floor
-                if detecting_models:
-                    # Reserve weight for non-detecting models and minimum weight for detecting models
-                    reserved_weight = len(non_detecting_models) * non_detecting_weight
-                    min_reserved_weight = len(detecting_models) * min_detecting_weight
-                    available_weight = 1.0 - reserved_weight - min_reserved_weight
-                    
-                    if available_weight > 0:
-                        total_detecting_conf = sum(track_model_contributions[m] for m in detecting_models)
-                        for model_name in detecting_models:
-                            model_conf = track_model_contributions[model_name]
-                            
-                            # Base weight (15% floor) + proportional share of remaining weight
-                            base_weight = min_detecting_weight
-                            if total_detecting_conf > 0:
-                                conf_proportion = model_conf / total_detecting_conf
-                                proportional_weight = available_weight * conf_proportion
-                            else:
-                                proportional_weight = available_weight / len(detecting_models)
-                            
-                            final_weight = base_weight + proportional_weight
-                            track_ensemble_score += model_conf * final_weight
-                    else:
-                        # Fallback: just use minimum weights if not enough weight available
-                        for model_name in detecting_models:
-                            model_conf = track_model_contributions[model_name]
-                            track_ensemble_score += model_conf * min_detecting_weight
+                # Calculate track ensemble score using extracted function
+                track_ensemble_score = self._calculate_ensemble_score(track_model_contributions)
                 
                 valid_models_for_track = [m for m, conf in track_model_contributions.items() if conf > 0]
                 
@@ -1935,6 +1919,10 @@ class NextGenVideoProcessor(VideoProcessorBase):
         best_sequence = max(final_validated_sequences, key=lambda s: s['combined_score'])
         best_detection = best_sequence['best_detection']
         
+        # Use the best validated track's ensemble score as video confidence
+        # No need to recalculate - we already computed this correctly during validation
+        video_confidence = best_sequence.get('ensemble_score', 0.0)
+        
         # No crop saving in direct pipeline
         
         analysis = {
@@ -1948,7 +1936,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
             'best_detection_frame': best_detection['frame_idx'],
             'best_detection_timestamp': best_detection['timestamp'],
             'detection': {
-                'confidence': best_detection['confidence'],
+                'confidence': video_confidence,
                 'bbox': best_detection['bbox'],
                 'area_ratio': self.calculate_area_ratio(best_detection['bbox'], frame_width, frame_height),
                 'source': best_detection['source'],
@@ -1961,7 +1949,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Extract features from best detection
         features = self.extract_features_from_best_sequence(video_path, best_sequence)
         
-        logger.info(f"=== COMPLETED: {video_path.name} - Animal detected (conf={best_detection['confidence']:.3f}, combined={best_sequence['combined_score']:.3f}) ===")
+        logger.info(f"=== COMPLETED: {video_path.name} - Animal detected (conf={video_confidence:.3f}, combined={best_sequence['combined_score']:.3f}) ===")
         return analysis, features
     
     def calculate_area_ratio(self, bbox: Tuple[int, int, int, int], frame_w: float, frame_h: float) -> float:

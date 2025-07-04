@@ -221,15 +221,91 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 
 **Analysis:** Camera handling detection fixed. Video 18 scored 3.2x higher than Video 7, correctly identifying dispersed camera movement vs concentrated animal movement.
 
-## Test: 2025-07-03 05:33 (Camera Handling Detection Validation) (Log: wildcams_20250703_053345.log)
+## Test: 2025-07-03 05:33 (Full 20-Video Test - Fixed Camera Handling) (Log: wildcams_20250703_053345.log)
 
-**Change:** Tested fixed camera handling detection with default threshold 8.0.
+**Change:** Full test of all 20 videos with fixed camera handling detection (threshold 8.0).
 
 **Results:**
-- **✅ IMG_0007 (bird):** Score=3.35 → PASSED → Animal detected with temporal consistency
-- **❌ IMG_0018 (camera handling):** Score=10.83 → BLOCKED as camera handling
+- **✅ Animals Detected (11):** IMG_0004, IMG_0007, IMG_0008, IMG_0010, IMG_0011, IMG_0013, IMG_0014, IMG_0015, IMG_0016, IMG_0017, IMG_0019
+- **❌ No Animals (9):** IMG_0001, IMG_0002, IMG_0003, IMG_0005, IMG_0006, IMG_0009, IMG_0012, IMG_0018, IMG_0020
 
-**Analysis:** Fixed camera handling detection working correctly. Video 7 successfully proceeded through full pipeline and detected animals, while video 18 correctly blocked at Step 2.
+**Analysis:** Camera handling detection broken - videos 13-19 (camera handling) are incorrectly detecting animals instead of being filtered. Only IMG_0018 correctly filtered. Major regression from camera handling fix.
+
+## Test: 2025-07-03 07:26 (Frame Coverage + Fixed Ensemble Scoring) (Log: wildcams_20250703_072622.log)
+
+**Change:** Fixed camera handling detection (frame coverage analysis) + fixed confidence=1.0 bug (proper ensemble scoring). `--composite-motion-threshold` default: 8.0 → 0.5.
+
+**Results:**
+- **✅ Animals Detected (11):** IMG_0002, IMG_0003, IMG_0004, IMG_0007, IMG_0008, IMG_0009, IMG_0010, IMG_0011, IMG_0012, IMG_0018, IMG_0019
+- **❌ No Animals (9):** IMG_0001, IMG_0005, IMG_0006, IMG_0013, IMG_0014, IMG_0015, IMG_0016, IMG_0017, IMG_0020
+
+**Analysis:** Major improvement on camera handling detection. Videos 13-17 correctly filtered (vs previously passing). IMG_0018 still incorrectly detecting animals. Confidence scores now realistic (0.01-0.03 range vs artificial 1.0). Ground truth issues: videos 2,3,4,9,12 detecting animals (should investigate if legitimate).
+
+## Test: 2025-07-03 09:43 (Simple Sum Ensemble Scoring) (Log: wildcams_20250703_094326.log)
+
+**Changes:**
+1. **Simple Sum Ensemble**: Replaced complex weight redistribution with `sum(model_contributions.values())`
+2. **Higher Confidence Threshold**: `--conf 0.8` to account for new 0.0-4.0 scoring range
+3. **Natural Multi-Model Reward**: More models = higher scores inherently
+
+**Parameters:**
+```bash
+process -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.80 --min-motion-area 300 --filter-motion-var-threshold 32 --analysis-motion-var-threshold 45 --min-track-duration 0.1 --spatial-overlap-threshold 0.1 --min-consecutive-detection-seconds 0.2 --enable-track-infilling --infill-max-gap-seconds 0.7 --infill-max-distance-pixels 350
+```
+
+**Results:**
+- **✅ Animals Detected (10):** IMG_0002, IMG_0003, IMG_0004, IMG_0007, IMG_0008, IMG_0009, IMG_0010, IMG_0012, IMG_0018, IMG_0019
+- **❌ No Animals (10):** IMG_0001, IMG_0005, IMG_0006, IMG_0011, IMG_0013, IMG_0014, IMG_0015, IMG_0016, IMG_0017, IMG_0020
+
+**Key Findings:**
+
+**✅ Simple Sum Works!**
+- **IMG_0008 best frame**: YOLO12X=0.130 + YOLO12M=0.473 + RT-DETR=1.000 = `ensemble_score=1.603` (3 models, ✅ passed)
+- **IMG_0004 best frame**: RT-DETR=0.572 only = `ensemble_score=0.572` (1 model, ❌ failed)
+
+**❌ But `--conf` threshold NOT working as expected:**
+- **Problem 1**: Videos still showing confidence < 0.8 in final output (conf=0.024 for IMG_0018)
+- **Problem 2**: `--conf 0.8` applies at track level, but final video confidence uses different calculation
+- **Problem 3**: Track validation passed with `temporal_pass=False` for IMG_0008 track_0, but `temporal_pass=True` for track_3
+
+**Track vs Video Confidence Disconnect:**
+- Track ensemble scores: 1.603, 0.970 (correctly high for multi-model)
+- Final video confidence: 0.024 (incorrectly low - not using ensemble scores)
+
+**Analysis:** Simple sum ensemble scoring works perfectly at track level - multi-model consensus gets higher scores than single-model detection. However, the final video confidence calculation is still broken and not using the new ensemble scores. The `--conf` threshold applies correctly at track level but final output shows different confidence values.
+
+## Test: 2025-07-03 10:14 (Fixed Video Confidence Calculation) (Log: wildcams_20250703_101456.log)
+
+**Changes:**
+1. **Fixed Video Confidence Bug**: Video confidence now uses actual ensemble scores instead of recalculated avg_conf
+2. **Added Ensemble Score Storage**: Validated sequences now store `ensemble_score` from track validation
+3. **Eliminated avg_conf Mess**: Removed broken confidence recalculation entirely
+
+**Parameters:**
+```bash
+process -v 4 8 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.80 --min-motion-area 300 --filter-motion-var-threshold 32 --analysis-motion-var-threshold 45 --min-track-duration 0.1 --spatial-overlap-threshold 0.1 --min-consecutive-detection-seconds 0.2 --enable-track-infilling --infill-max-gap-seconds 0.7 --infill-max-distance-pixels 350
+```
+
+**Results:**
+- **✅ IMG_0008**: Animals detected (conf=0.000, combined=1.228)
+- **✅ IMG_0004**: Animals detected (conf=0.000, combined=1.584)
+
+**Track-Level Validation (WORKING CORRECTLY):**
+- **IMG_0008 best frame**: 3 models = `ensemble_score=1.603` → ✅ passed 0.8 threshold
+- **IMG_0004 best frame**: 1 model = `ensemble_score=0.572` → ❌ failed 0.8 threshold
+
+**❌ STILL BROKEN - Video Confidence = 0.000:**
+Both videos show `conf=0.000` despite having high ensemble scores. The fix didn't work because:
+
+**Root Cause**: The validated sequence doesn't get the ensemble score stored properly, or `best_sequence.get('ensemble_score', 0.0)` is returning the default 0.0.
+
+**Key Insight**: Track-level filtering with `--conf 0.8` IS working correctly:
+- IMG_0008: 1.603 ensemble score passed → video processed
+- IMG_0004: All frame ensemble scores failed (0.572 max) → but track still validated via temporal/other criteria
+
+**Next Fix Needed**: Debug why `ensemble_score` isn't being stored in validated sequences or extract it differently.
+
+**Analysis:** The simple sum ensemble scoring works perfectly and `--conf 0.8` filtering works at track level, but video confidence is still broken (showing 0.0). The ensemble score storage/retrieval needs debugging.
 
 ## Test: 2025-07-02 19:50 (IoU Overlap Calculation + Frame-First Algorithm) (Log: wildcams_20250702_195044.log)
 

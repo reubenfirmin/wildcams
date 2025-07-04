@@ -145,8 +145,8 @@ class VideoProcessorBase:
         # Camera handling detection
         parser.add_argument('--detection-density-threshold', type=float, default=15.0,
                            help='Detection density threshold for camera handling detection (default: 15.0)')
-        parser.add_argument('--composite-motion-threshold', type=float, default=8.0,
-                           help='Camera handling detection threshold - higher values indicate camera handling (default: 8.0)')
+        parser.add_argument('--composite-motion-threshold', type=float, default=0.5,
+                           help='Camera handling detection threshold - higher values indicate camera handling (default: 0.5)')
         parser.add_argument('--min-motion-threshold', type=int, default=100,
                            help='Minimum motion threshold to avoid processing static videos (default: 100)')
         parser.add_argument('--motion-frames-weight', type=float, default=1.2,
