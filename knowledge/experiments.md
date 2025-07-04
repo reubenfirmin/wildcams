@@ -410,3 +410,25 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 - Average: ~48s per video
 
 **Key insight:** Fixed ensemble weighting but system now failing to detect known animals. Major regression in sensitivity.
+
+## Refactoring Bug Fixes: 2025-07-04 05:39 (Phase 1 Config System)
+
+**Issue:** After Phase 1 refactoring (config system), two critical bugs emerged:
+
+**Problem A: conf=0.000 in final output**
+- Videos 9 and 10 showed `conf=0.000` but `combined=1.596/1.358`  
+- **Root Cause:** `ensemble_score` field missing from validated sequence structure
+- **Fix:** Added proper ensemble score tracking from frame-level evaluation to final output
+
+**Problem B: Video 8 motion filter regression**  
+- Video 8 failed motion filter (`score=0.053 > 0`) when it should pass
+- **Root Cause:** `composite_motion_threshold` type was `int` instead of `float`, truncating 0.5 → 0
+- **Fix:** Changed ProcessingConfig field from `int` to `float`
+
+**Changes Made:**
+1. Fixed `composite_motion_threshold: int` → `composite_motion_threshold: float` in ProcessingConfig
+2. Removed `int()` conversion in ConfigurationManager 
+3. Added `ensemble_score` field to validated track results using actual ensemble algorithm output
+4. Tracked best ensemble score per track from frame-level evaluation
+
+**Test Command:** `./process.py -v 8 9 10`

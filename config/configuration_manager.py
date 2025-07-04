@@ -63,6 +63,10 @@ class ConfigurationManager:
                            help='DBSCAN eps parameter for clustering (default: 0.3)')
         parser.add_argument('--min-samples', type=int, default=2,
                            help='DBSCAN min_samples parameter for clustering (default: 2)')
+        
+        # Temporal continuity
+        parser.add_argument('--confidence-bridge-threshold', type=float, default=0.6,
+                           help='Threshold for bridging medium-confidence frames between high-confidence ones (default: 0.6)')
     
     def setup_motion_detection_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Add motion detection specific arguments to an argument parser."""
@@ -223,7 +227,10 @@ class ConfigurationManager:
             
             # Clustering parameters
             clustering_eps=args.clustering_eps,
-            min_samples=args.min_samples
+            min_samples=args.min_samples,
+            
+            # Temporal continuity
+            confidence_bridge_threshold=args.confidence_bridge_threshold
         )
     
     def get_processing_config(self) -> ProcessingConfig:

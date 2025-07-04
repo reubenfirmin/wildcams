@@ -1021,7 +1021,15 @@ class NextGenVideoProcessor(VideoProcessorBase):
         
         # Global tracking for all tracks
         track_detections = {track['track_id']: [] for track in extended_tracks}
+        
+        # Initialize model contributions for ALL ensemble models (including zero-detection models)
         model_contributions = {}
+        for model_name in config.ensemble_models:
+            model_contributions[model_name] = {
+                'count': 0, 'max_conf': 0.0, 'total_conf': 0.0,
+                'spatial_valid_count': 0, 'total_score': 0.0
+            }
+        
         frame_results = []
         
         # PHASE 1: Frame-First Processing (your specified algorithm)
@@ -1043,12 +1051,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     accepted_rtdetr_overlap=config.spatial_overlap_threshold
                 )
                 
-                # Initialize model contributions if needed
-                if model_name not in model_contributions:
-                    model_contributions[model_name] = {
-                        'count': 0, 'max_conf': 0.0, 'total_conf': 0.0,
-                        'spatial_valid_count': 0, 'total_score': 0.0
-                    }
+                # Model contributions already initialized for all ensemble models
                 
                 # Update global model contributions for this frame (once per model)
                 if model_detections:
@@ -1284,17 +1287,41 @@ class NextGenVideoProcessor(VideoProcessorBase):
                 confidence_passed = combined_score >= config.confidence_threshold
                 frames_passed = len(full_frame_detections) >= config.min_track_frames
                 
-                # Check minimum consecutive detection duration
+                # Check minimum consecutive detection duration with confidence bridging
                 temporal_continuity_passed = True
                 if passed_frames > 1:
-                    # Get timestamps of frames that passed ensemble validation for this track
-                    passed_frame_timestamps = []
+                    # Get all frame results for this track (passed and failed)
+                    all_frame_results = []
                     for fr in frame_results:
                         if fr['frame_idx'] in track_frames:
                             track_result = next((tr for tr in fr['track_results'] if tr['track_id'] == track_id), None)
-                            if track_result and track_result['passed']:
+                            if track_result:
                                 frame_timestamp = fr['frame_idx'] / fps
-                                passed_frame_timestamps.append(frame_timestamp)
+                                all_frame_results.append({
+                                    'timestamp': frame_timestamp,
+                                    'passed': track_result['passed'],
+                                    'ensemble_score': track_result['ensemble_score']
+                                })
+                    
+                    # Sort by timestamp
+                    all_frame_results.sort(key=lambda x: x['timestamp'])
+                    
+                    # Apply confidence bridging: medium confidence frames between high confidence frames count as passed
+                    for i in range(1, len(all_frame_results) - 1):
+                        current = all_frame_results[i]
+                        prev_frame = all_frame_results[i-1]
+                        next_frame = all_frame_results[i+1]
+                        
+                        # If current frame failed but has medium confidence, and is between two passed frames
+                        if (not current['passed'] and 
+                            current['ensemble_score'] >= config.confidence_bridge_threshold and
+                            prev_frame['passed'] and next_frame['passed']):
+                            current['passed'] = True
+                            passed_frames += 1
+                            logger.info(f"CONFIDENCE BRIDGE: track_{track_id} frame at {current['timestamp']:.2f}s (score={current['ensemble_score']:.3f}) bridged between high-confidence frames")
+                    
+                    # Get timestamps of frames that passed (including bridged)
+                    passed_frame_timestamps = [fr['timestamp'] for fr in all_frame_results if fr['passed']]
                     
                     # Find longest consecutive sequence of passing frames
                     if len(passed_frame_timestamps) > 1:
@@ -1845,7 +1872,15 @@ class NextGenVideoProcessor(VideoProcessorBase):
         # Model contributions are now tracked directly in the full-frame analysis function
         # Extract from validated sequences for summary
         self._model_contributions = getattr(self, '_model_contributions', {})
+        
+        # Initialize video model stats for ALL ensemble models (including zero-detection models)
         video_model_stats = {}
+        for model_name in config.ensemble_models:
+            video_model_stats[model_name] = {
+                'total_detections': 0,
+                'max_confidence': 0.0,
+                'contributing_tracks': 0
+            }
         
         for sequence in final_validated_sequences:
             for model_name, stats in sequence.get('model_contributions', {}).items():
@@ -2098,31 +2133,13 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     all_models_stats[model_name]['max_confidence'] = max(all_models_stats[model_name]['max_confidence'], stats['max_confidence'])
                     all_models_stats[model_name]['total_tracks'] += stats['contributing_tracks']
             
-            # Sort models by type (YOLO, RT-DETR, MegaDetector) and show statistics
-            yolo_models = {k: v for k, v in all_models_stats.items() if not k.startswith('MDV6-') and not k.startswith('rtdetr_')}
-            rtdetr_models = {k: v for k, v in all_models_stats.items() if k.startswith('rtdetr_')}
-            md_models = {k: v for k, v in all_models_stats.items() if k.startswith('MDV6-')}
-            
             logger.info(f"  📊 ANALYSIS COVERS: {len(videos_with_ml_data)} videos with ML data ({len(videos_with_animals)} successful, {len(videos_with_ml_data) - len(videos_with_animals)} failed validation)")
             logger.info("")
             
-            if yolo_models:
-                logger.info("  🎯 YOLO MODELS:")
-                for model_name, stats in sorted(yolo_models.items()):
-                    logger.info(f"    {model_name}: {stats['total_detections']} detections, {stats['videos_contributed']}/{len(videos_with_ml_data)} videos, max_conf={stats['max_confidence']:.3f}, tracks={stats['total_tracks']}")
-                logger.info("")
-            
-            if rtdetr_models:
-                logger.info("  🔬 RT-DETR MODELS:")
-                for model_name, stats in sorted(rtdetr_models.items()):
-                    logger.info(f"    {model_name}: {stats['total_detections']} detections, {stats['videos_contributed']}/{len(videos_with_ml_data)} videos, max_conf={stats['max_confidence']:.3f}, tracks={stats['total_tracks']}")
-                logger.info("")
-            
-            if md_models:
-                logger.info("  🦎 MEGADETECTOR MODELS:")
-                for model_name, stats in sorted(md_models.items()):
-                    logger.info(f"    {model_name}: {stats['total_detections']} detections, {stats['videos_contributed']}/{len(videos_with_ml_data)} videos, max_conf={stats['max_confidence']:.3f}, tracks={stats['total_tracks']}")
-                logger.info("")
+            logger.info("  🤖 ALL MODELS:")
+            for model_name, stats in sorted(all_models_stats.items(), key=lambda x: x[1]['total_detections'], reverse=True):
+                logger.info(f"    {model_name}: {stats['total_detections']} detections, {stats['videos_contributed']}/{len(videos_with_ml_data)} videos, max_conf={stats['max_confidence']:.3f}, tracks={stats['total_tracks']}")
+            logger.info("")
             
             # Per-video breakdown for detailed analysis - ALL videos with ML data
             logger.info("  📹 PER-VIDEO MODEL BREAKDOWN:")
@@ -2135,8 +2152,7 @@ class NextGenVideoProcessor(VideoProcessorBase):
                     # Sort by detection count for easier comparison
                     sorted_models = sorted(video_stats.items(), key=lambda x: x[1]['total_detections'], reverse=True)
                     for model_name, stats in sorted_models:
-                        model_type = "MD" if model_name.startswith('MDV6-') else "YOLO"
-                        logger.info(f"      {model_type:<4} {model_name}: {stats['total_detections']} detections, max_conf={stats['max_confidence']:.3f}")
+                        logger.info(f"      {model_name}: {stats['total_detections']} detections, max_conf={stats['max_confidence']:.3f}")
                 else:
                     logger.info(f"    {video_name}: No model contribution data")
             logger.info("")

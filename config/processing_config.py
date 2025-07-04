@@ -77,3 +77,6 @@ class ProcessingConfig:
     # Clustering parameters
     clustering_eps: float
     min_samples: int
+    
+    # Temporal continuity
+    confidence_bridge_threshold: float
