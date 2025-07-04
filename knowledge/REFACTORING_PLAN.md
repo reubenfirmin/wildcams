@@ -1,46 +1,58 @@
 # Wildlife Camera Processing System - Refactoring Plan
 
 ## Overview
-Transform the current monolithic codebase into a clean, modular, object-oriented architecture. Break up large classes into focused components with clear responsibilities and well-defined interfaces.
+Transform the current partially-refactored codebase into a clean, modular, object-oriented architecture. Build upon recent improvements while breaking up remaining large classes into focused components with clear responsibilities and well-defined interfaces.
 
-## Current Problems
+## Current State (Updated July 2025)
 
-### Code Quality Issues
-- **God Classes**: `NextGenVideoProcessor` (~1,400 lines), `VideoProcessorBase` (~747 lines)
-- **Mixed Concerns**: Motion detection, ML inference, file I/O, and configuration all mixed together
-- **Tight Coupling**: Global config object creates dependencies across components
+### Progress Made
+✅ **Configuration Management**: Global config object replaced with ProcessingConfig dataclass  
+✅ **Module Separation**: ML detection extracted to separate module (ml_detection.py)  
+✅ **Base Class Extraction**: Common functionality moved to VideoProcessorBase  
+✅ **Specialized Components**: DeepSORT tracking isolated to separate module  
+✅ **Algorithm Improvements**: 3-step pipeline with camera handling detection, spatial overlap validation, frame sampling optimizations
+
+### Current Problems
+
+#### Code Quality Issues (Updated)
+- **God Classes**: `NextGenVideoProcessor` (~2,504 lines), `VideoProcessorBase` (~846 lines)
+- **Mixed Concerns**: Motion detection, ML inference, file I/O, and configuration still mixed in base class
+- **Tight Coupling**: While config is improved, components still tightly coupled through inheritance
 - **Poor Testability**: Large classes with multiple responsibilities are hard to unit test
 - **Difficult Maintenance**: Changes require understanding the entire system
 
-### Specific Issues by File
-- **process.py**: Single massive class handling 4-step pipeline, motion detection, tracking, ML coordination
-- **video_processor_base.py**: God class managing CLI, environment, video I/O, validation, clustering
-- **ml_detection.py**: Model loading, preprocessing, inference, and validation all in one class
-- **sd_watcher.py**: Actually well-structured, minor improvements needed
+#### Specific Issues by File (Updated)
+- **process.py**: Massive NextGenVideoProcessor class (2,504 lines) handling 3-step pipeline, motion detection, tracking, ML coordination
+- **video_processor_base.py**: God class (846 lines) managing CLI, environment, video I/O, validation, clustering
+- **ml_detection.py**: Model loading, preprocessing, inference, and validation all in one class (973 lines)
+- **sd_watcher.py**: Well-structured, minor improvements needed
+- **deepsort_tracker.py**: Well-structured, but could benefit from better integration
 
 ## Refactoring Strategy
 
 ### Phase 1: Configuration & Infrastructure (Week 1)
 
-#### 1.1 Extract Configuration Management
+#### 1.1 Enhance Configuration Management ✅ PARTIALLY DONE
+**Status**: ProcessingConfig dataclass implemented, but CLI parsing still in base class
+
 **New Files:**
 ```
 config/
 ├── __init__.py
 ├── configuration_manager.py   # ConfigurationManager class
-├── cli_parser.py             # CLIArgumentParser class
+├── cli_parser.py             # CLIArgumentParser class (extract from VideoProcessorBase)
 ├── environment_config.py     # EnvironmentConfigLoader class
-└── processing_config.py      # ProcessingConfig (improved dataclass)
+└── processing_config.py      # ProcessingConfig (already exists, move here)
 ```
 
 **Extract From:**
-- Global `config` object from `process.py`
-- Static CLI methods from `video_processor_base.py`
-- Environment variable loading scattered across files
+- CLI parsing methods from `video_processor_base.py` (lines 1-200)
+- Environment variable loading from `video_processor_base.py`
+- Move existing `ProcessingConfig` from `process.py` to dedicated module
 
 **New Architecture:**
 ```python
-# Instead of global config object
+# Enhanced version of existing ProcessingConfig approach
 config_manager = ConfigurationManager()
 config_manager.load_from_environment()
 config_manager.load_from_cli_args(sys.argv)
@@ -53,26 +65,29 @@ processing_config = config_manager.get_processing_config()
 io/
 ├── __init__.py
 ├── video_reader.py           # VideoReader class
-├── frame_extractor.py        # FrameExtractor class
+├── frame_extractor.py        # FrameExtractor class (includes recent frame sampling improvements)
 ├── analysis_writer.py        # AnalysisWriter class
 └── processed_tracker.py      # ProcessedVideoTracker class
 ```
 
 **Extract From:**
-- Video opening/reading methods from `video_processor_base.py`
-- Frame extraction and sampling logic
+- Video opening/reading methods from `video_processor_base.py` (lines 300-500)
+- Frame extraction and sampling logic (incorporate recent temporal clustering improvements)
 - Analysis output writing and `.processed` file management
+- Clustering and similarity analysis methods
 
 **New Architecture:**
 ```python
 video_reader = VideoReader(video_path)
-frame_extractor = FrameExtractor(max_frames=20, sampling_strategy='uniform')
+frame_extractor = FrameExtractor(max_frames=20, sampling_strategy='temporal_clustering')
 frames = frame_extractor.extract_frames(video_reader)
 ```
 
 ### Phase 2: ML Model Management (Week 2)
 
-#### 2.1 Break Up MLDetectionEnsemble
+#### 2.1 Break Up MLDetectionEnsemble ⚠️ CRITICAL PRIORITY
+**Status**: MLDetectionEnsemble extracted to separate module but still monolithic at 973 lines
+
 **New Files:**
 ```
 ml/
@@ -80,31 +95,35 @@ ml/
 ├── model_manager.py          # ModelManager class
 ├── model_loaders/
 │   ├── __init__.py
-│   ├── yolo_loader.py        # YOLOModelLoader class (standalone YOLOv8x/m)
-│   └── megadetector_loader.py # MegaDetectorLoader class (all MDV6-* variants)
+│   ├── yolo_loader.py        # YOLOModelLoader class (YOLOv8x/m, YOLOv10, YOLOv11)
+│   ├── megadetector_loader.py # MegaDetectorLoader class (all MDV6-* variants)
+│   └── rtdetr_loader.py      # RTDETRLoader class (standalone RT-DETR)
 ├── inference/
 │   ├── __init__.py
 │   ├── inference_engine.py   # InferenceEngine class
 │   ├── yolo_inference.py     # YOLOInferenceEngine class
 │   ├── megadetector_inference.py # MegaDetectorInferenceEngine class
+│   ├── rtdetr_inference.py   # RTDETRInferenceEngine class
 │   └── ensemble_coordinator.py # EnsembleCoordinator class
 ├── preprocessing.py          # PreprocessingPipeline class
 └── postprocessing.py         # PostprocessingPipeline class
 ```
 
 **Extract From:**
-- Model initialization logic from `MLDetectionEnsemble`
+- Model initialization logic from `MLDetectionEnsemble` (973 lines)
 - Individual model inference methods
 - Preprocessing transformations (TTA, multi-scale)
 - NMS and detection filtering
+- Current ensemble models: yolo12x, yolo12m, MDV6-yolov10-e, rtdetr-l
 
-**Model Boundaries:**
-- **YOLOLoader**: Handles standalone YOLOv8x and YOLOv8m models
+**Updated Model Boundaries:**
+- **YOLOLoader**: Handles YOLO variants (YOLOv8x/m, YOLOv10 n/s/m/b/l/x, YOLOv11 n/s/m/l/x)
 - **MegaDetectorLoader**: Handles all MegaDetector v6 variants:
   - `MDV6-yolov9-e` (MegaDetector wrapper around YOLOv9)
   - `MDV6-yolov10-e` (MegaDetector wrapper around YOLOv10)  
   - `MDV6-rtdetr-c` (MegaDetector wrapper around RT-DETR)
-- RT-DETR is only accessed through MegaDetector interface, never directly
+- **RTDETRLoader**: Handles standalone RT-DETR models (rtdetr-l, rtdetr-x)
+- Current default ensemble: yolo12x, yolo12m, MDV6-yolov10-e, rtdetr-l
 
 **New Architecture:**
 ```python
@@ -113,8 +132,8 @@ model_manager = ModelManager(cache_dir, ensemble_models)
 inference_engine = InferenceEngine(model_manager)
 ensemble_coordinator = EnsembleCoordinator(inference_engine)
 
-# Clean separation of concerns
-detections = ensemble_coordinator.detect(image, crop_mode=True)
+# Clean separation of concerns for 3-step pipeline
+detections = ensemble_coordinator.detect(image, full_frame_only=True)  # No crop mode in current system
 ```
 
 #### 2.2 Extract Preprocessing & Postprocessing
@@ -124,7 +143,9 @@ detections = ensemble_coordinator.detect(image, crop_mode=True)
 
 ### Phase 3: Processing Pipeline (Week 3)
 
-#### 3.1 Create Pipeline Architecture
+#### 3.1 Create Pipeline Architecture ⚠️ CRITICAL PRIORITY
+**Status**: 3-step pipeline implemented within monolithic NextGenVideoProcessor class (2,504 lines)
+
 **New Files:**
 ```
 pipeline/
@@ -135,33 +156,36 @@ pipeline/
     ├── __init__.py
     ├── motion_detection_step.py    # MotionDetectionStep class
     ├── camera_handling_step.py     # CameraHandlingFilterStep class
-    ├── crop_analysis_step.py       # CropAnalysisStep class
     └── fullframe_validation_step.py # FullFrameValidationStep class
 ```
 
 **Extract From:**
-- 4-step pipeline logic from `NextGenVideoProcessor`
+- 3-step pipeline logic from `NextGenVideoProcessor` (2,504 lines)
+- Motion detection + temporal tracking (Step 1)
+- Camera handling detection with spatial dispersion + motion sparsity (Step 2)
+- Full-frame analysis with spatial overlap validation (Step 3)
 - Each step becomes a separate class with clear input/output contracts
 
-**New Architecture:**
+**Updated Architecture (3-Step Pipeline):**
 ```python
 class PipelineStep(ABC):
     @abstractmethod
     def process(self, input_data: StepInput) -> StepOutput:
         pass
 
-# Clean pipeline execution
+# Clean pipeline execution (updated for current 3-step approach)
 orchestrator = PipelineOrchestrator([
-    MotionDetectionStep(motion_config),
-    CameraHandlingFilterStep(filter_config),
-    CropAnalysisStep(ml_coordinator),
-    FullFrameValidationStep(validation_config)
+    MotionDetectionStep(motion_config),           # Step 1: Motion + Tracking
+    CameraHandlingFilterStep(filter_config),      # Step 2: Camera Handling Detection
+    FullFrameValidationStep(ml_coordinator)       # Step 3: Full-Frame Analysis
 ])
 
 result = orchestrator.process(video_path)
 ```
 
 #### 3.2 Extract Motion Detection
+**Status**: Motion detection implemented within NextGenVideoProcessor, needs extraction
+
 **New Files:**
 ```
 motion/
@@ -300,6 +324,33 @@ src/
 - **sd_watcher.py** → Minor cleanup, mostly stays the same
 - **New entry points** for testing individual components
 
+## Current State Assessment (July 2025)
+
+### What Has Been Accomplished ✅
+1. **Configuration Improvements**: ProcessingConfig dataclass replaces global config
+2. **3-Step Pipeline**: Motion detection → Camera handling → Full-frame analysis
+3. **Algorithm Refinements**: 
+   - Camera handling detection with spatial dispersion + motion sparsity
+   - Spatial overlap validation with motion regions
+   - Frame sampling improvements for temporal consistency
+4. **Module Extraction**: ML detection separated into dedicated module
+5. **Component Isolation**: DeepSORT tracker extracted to separate module
+6. **Knowledge Base**: Comprehensive documentation and procedures
+
+### What Still Needs Refactoring ⚠️
+1. **Monolithic Classes**: NextGenVideoProcessor (2,504 lines), VideoProcessorBase (846 lines)
+2. **Package Structure**: No src/ directory or proper package organization
+3. **ML Ensemble**: 973-line MLDetectionEnsemble needs breakdown
+4. **Mixed Concerns**: I/O, CLI, processing still mixed in base class
+5. **Testing**: No unit tests for individual components
+
+### Priority Ranking
+1. **CRITICAL**: Break up NextGenVideoProcessor (2,504 lines) - Phase 3
+2. **HIGH**: Extract MLDetectionEnsemble (973 lines) - Phase 2  
+3. **HIGH**: Create package structure - Phase 1
+4. **MEDIUM**: Extract I/O operations from VideoProcessorBase - Phase 1
+5. **LOW**: Final cleanup and optimization - Phase 5
+
 ## Implementation Benefits
 
 ### Code Quality Improvements
@@ -309,16 +360,18 @@ src/
 - **Clear Interfaces**: Well-defined contracts between components
 
 ### Maintainability Benefits
-- **Smaller Classes**: 100-200 lines instead of 1,400+ line monsters
+- **Smaller Classes**: 100-200 lines instead of 2,500+ line monsters
 - **Focused Testing**: Each component can be unit tested in isolation
 - **Easier Debugging**: Problems isolated to specific components
 - **Clear Dependencies**: Explicit rather than implicit coupling
+- **Algorithm Isolation**: Motion detection, camera handling, validation can be tested independently
 
 ### Extensibility Benefits
 - **BioCLIP Integration**: Simply add new pipeline step
 - **New Tracking Algorithms**: Implement `TemporalTracker` interface
-- **New ML Models**: Add new model loader and inference engine
+- **New ML Models**: Add new model loader and inference engine (current: YOLO, RT-DETR, MegaDetector)
 - **Different Validation Strategies**: Implement new validation steps
+- **Algorithm Experimentation**: Easier to test motion detection, camera handling, validation parameters
 
 ## Migration Strategy
 
@@ -342,8 +395,10 @@ src/
 
 ## Success Metrics
 
-### Code Quality Metrics
-- **Average Class Size**: Reduce from 500+ lines to 100-200 lines
+### Code Quality Metrics (Updated Targets)
+- **Average Class Size**: Reduce from 1,400+ lines to 100-200 lines
+- **Current State**: NextGenVideoProcessor (2,504), VideoProcessorBase (846), MLDetectionEnsemble (973)
+- **Target State**: All classes under 300 lines
 - **Cyclomatic Complexity**: Reduce from 15+ to 5-8 per method
 - **Coupling**: Minimize dependencies between components
 - **Test Coverage**: Achieve 80%+ coverage on new components
@@ -352,5 +407,12 @@ src/
 - **Time to Add New Feature**: Should be significantly reduced
 - **Time to Debug Issues**: Should be faster with isolated components
 - **Developer Onboarding**: New developers should understand system faster
+- **Algorithm Experimentation**: Easier to test single components
 
-This refactoring will transform the codebase from a collection of monolithic classes into a clean, modular architecture that follows SOLID principles and is easy to maintain, test, and extend.
+### Current Performance Baselines
+- **3-Step Pipeline**: Motion detection → Camera handling → Full-frame analysis
+- **Ground Truth**: Videos 7,8,9,11,12 (animals), 1-6 (false positives), 13-19 (camera handling)
+- **Current Models**: yolo12x, yolo12m, MDV6-yolov10-e, rtdetr-l
+- **Validation**: Spatial overlap validation with motion regions
+
+This refactoring will transform the codebase from a collection of monolithic classes into a clean, modular architecture that follows SOLID principles and is easy to maintain, test, and extend, while preserving the sophisticated 3-step pipeline and algorithmic improvements already developed.
