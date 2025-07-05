@@ -34,6 +34,7 @@ Across all videos:
 2. **ResNet18** - Visual similarity features (existing integration)
 3. **CLIP** - Semantic understanding for unclear/partial animals
 4. **DINOv2** - Self-supervised visual features robust to conditions
+5. **DeepFaune** - Animal species classification 
 
 ### Model Usage Strategy
 - **High BioCLIP confidence (>0.7)**: Use species classification for primary grouping

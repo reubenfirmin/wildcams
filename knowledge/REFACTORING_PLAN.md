@@ -131,78 +131,125 @@ ml_ensemble = MLDetectionEnsemble(confidence_threshold, ensemble_models, cache_d
 detections = ml_ensemble.run_ensemble_detection(frame, timestamp, frame_idx, full_frame)
 ```
 
-### Phase 3: Processing Pipeline (Week 3)
+#### 2.2 CLI Argument Centralization ✅ COMPLETED
+**Status**: All argument parsing consolidated in ConfigurationManager
 
-#### 3.1 Create Pipeline Architecture ⚠️ CRITICAL PRIORITY
-**Status**: 3-step pipeline implemented within monolithic NextGenVideoProcessor class (2,504 lines)
+**Accomplishments:**
+- ✅ Moved stray `--videos` argument from process.py to ConfigurationManager
+- ✅ Added centralized `parse_video_filter()` method
+- ✅ Cleaned up scattered argument parsing logic
+- ✅ Updated default parameters to match optimized workflow:
+  - Ensemble: `yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l`
+  - Confidence threshold: `0.8`
+  - Spatial overlap threshold: `0.1` 
+  - Track infilling: enabled by default
+  - Infill gap: `0.7s`, distance: `350px`
 
-**New Files:**
+**Before/After:**
+```python
+# Before (scattered in process.py)
+parser.add_argument('--videos', '-v', nargs='+', help='...')
+video_filter = None
+if args.videos:
+    # manual parsing logic...
+
+# After (centralized in ConfigurationManager)
+config_manager.setup_common_arguments(parser)  # includes --videos
+video_filter = config_manager.parse_video_filter(args)
+```
+
+### Phase 3: Processing Pipeline ✅ COMPLETED
+
+#### 3.1 Create Pipeline Architecture ✅ COMPLETED
+**Status**: Successfully extracted 3-step pipeline from monolithic NextGenVideoProcessor into modular architecture
+
+**Completed Files:**
 ```
 pipeline/
-├── __init__.py
-├── pipeline_orchestrator.py  # PipelineOrchestrator class
-├── step_interface.py         # PipelineStep abstract base class
+├── __init__.py                              ✅ Done
+├── pipeline_orchestrator.py                ✅ Done - Orchestrates execution of pipeline steps
+├── step_interface.py                       ✅ Done - Abstract base class and data structures
+├── camera_handling_filter.py               ✅ Done - Core camera handling detection logic
+├── fullframe_validator.py                  ✅ Done - Full-frame validation with spatial overlap
 └── steps/
-    ├── __init__.py
-    ├── motion_detection_step.py    # MotionDetectionStep class
-    ├── camera_handling_step.py     # CameraHandlingFilterStep class
-    └── fullframe_validation_step.py # FullFrameValidationStep class
-```
+    ├── __init__.py                          ✅ Done
+    ├── motion_detection_step.py             ✅ Done - Step 1: Motion detection & tracking
+    ├── camera_handling_step.py              ✅ Done - Step 2: Camera handling filter
+    └── fullframe_validation_step.py         ✅ Done - Step 3: Full-frame ML validation
 
-**Extract From:**
-- 3-step pipeline logic from `NextGenVideoProcessor` (2,504 lines)
-- Motion detection + temporal tracking (Step 1)
-- Camera handling detection with spatial dispersion + motion sparsity (Step 2)
-- Full-frame analysis with spatial overlap validation (Step 3)
-- Each step becomes a separate class with clear input/output contracts
-
-**Updated Architecture (3-Step Pipeline):**
-```python
-class PipelineStep(ABC):
-    @abstractmethod
-    def process(self, input_data: StepInput) -> StepOutput:
-        pass
-
-# Clean pipeline execution (updated for current 3-step approach)
-orchestrator = PipelineOrchestrator([
-    MotionDetectionStep(motion_config),           # Step 1: Motion + Tracking
-    CameraHandlingFilterStep(filter_config),      # Step 2: Camera Handling Detection
-    FullFrameValidationStep(ml_coordinator)       # Step 3: Full-Frame Analysis
-])
-
-result = orchestrator.process(video_path)
-```
-
-#### 3.2 Extract Motion Detection
-**Status**: Motion detection implemented within NextGenVideoProcessor, needs extraction
-
-**New Files:**
-```
 motion/
-├── __init__.py
-├── motion_detector.py        # MotionDetector class
-├── background_subtractor.py  # BackgroundSubtractorFactory class
-├── motion_config.py          # MotionDetectionConfig class
-└── region_analyzer.py        # MotionRegionAnalyzer class
+├── __init__.py                              ✅ Done
+├── background_subtractor.py                ✅ Done - OpenCV background subtractor factory
+├── motion_detector.py                      ✅ Done - Motion detection with region filtering
+└── motion_tracker.py                       ✅ Done - Temporal tracking with infilling
 ```
 
-**Extract From:**
-- Motion detection methods from `NextGenVideoProcessor`
-- OpenCV background subtraction setup
-- Motion region analysis and filtering
+**Accomplishments:**
+- ✅ Extracted 3-step pipeline from 2,413-line NextGenVideoProcessor into focused components
+- ✅ Created modular pipeline architecture with clear step interfaces
+- ✅ Implemented sophisticated motion detection and tracking with infilling
+- ✅ Built camera handling filter with spatial clustering and frame coverage analysis
+- ✅ Developed full-frame validation with ensemble models and spatial overlap verification
+- ✅ Maintained all algorithmic sophistication while improving maintainability
+- ✅ Created clean separation of concerns with dependency injection
+- ✅ Implemented comprehensive logging and debugging throughout pipeline
 
 **New Architecture:**
 ```python
-motion_detector = MotionDetector(motion_config)
-motion_regions = motion_detector.detect_motion_regions(video_reader)
+# Modular pipeline execution with clear step boundaries
+steps = [
+    MotionDetectionStep(motion_config),           # Step 1: Motion + Tracking
+    CameraHandlingFilterStep(filter_config),      # Step 2: Camera Handling Detection  
+    FullFrameValidationStep(ml_ensemble, config)  # Step 3: Full-Frame Analysis
+]
 
-# Clear input/output contracts
-@dataclass
-class MotionRegion:
-    frame_number: int
-    bbox: Tuple[int, int, int, int]
-    confidence: float
-    area: int
+orchestrator = PipelineOrchestrator(steps)
+result = orchestrator.process(video_path)
+
+# Each step has clear input/output contracts
+class PipelineStep(ABC):
+    @abstractmethod
+    def process(self, step_input: StepInput) -> StepOutput:
+        pass
+```
+
+**Key Features Preserved:**
+- **Motion Detection**: OpenCV background subtraction with intelligent region expansion
+- **Track Infilling**: Bridges gaps between motion tracks with spatial/temporal criteria  
+- **Camera Handling**: Frame coverage analysis with spatial clustering and consistency penalties
+- **Spatial Overlap**: Validates ML detections against motion regions with configurable thresholds
+- **Ensemble Scoring**: Multi-model consensus with confidence boosting
+- **Early Exit Logic**: Prevents expensive ML processing when camera handling detected
+
+#### 3.2 Extract Motion Detection ✅ COMPLETED
+**Status**: Motion detection successfully extracted from NextGenVideoProcessor with clean architecture
+
+**Completed Files:**
+```
+motion/
+├── __init__.py                              ✅ Done
+├── motion_detector.py                       ✅ Done - MotionDetector class with region filtering
+├── background_subtractor.py                ✅ Done - BackgroundSubtractorFactory class
+└── motion_tracker.py                       ✅ Done - MotionTracker class with infilling
+```
+
+**Accomplishments:**
+- ✅ Motion detection completely extracted from NextGenVideoProcessor
+- ✅ Clean architecture with ProcessingConfig object passing (no magic strings)
+- ✅ Sophisticated region filtering and expansion for ML context
+- ✅ OpenCV background subtraction with MOG2/KNN support
+- ✅ Temporal tracking with gap infilling based on spatial/temporal criteria
+- ✅ Comprehensive logging and parameter validation
+
+**New Architecture:**
+```python
+# Clean config object passing instead of parameter dictionaries
+motion_detector = MotionDetector(config)
+motion_regions = motion_detector.detect_motion_regions(frame, config)
+
+# All parameter access via ProcessingConfig attributes
+if area < config.min_motion_area or area > config.max_motion_area:
+    continue
 ```
 
 ### Phase 4: Temporal Tracking (Week 4)
@@ -237,6 +284,14 @@ tracks = tracker.update_tracks(motion_regions)
 ```
 
 ### Phase 5: Clean Main Classes (Week 5)
+
+## Phase 5.0 - cleanup
+* Objects for everything. No dicts for "on the fly" objects. 
+* Consistent typing throughout. All parameters need a type. All functions need a return type. No kwargs. No loose dicts. No magic strings.
+* Final sweep to ensure that config is passed through to all functions that need it.
+* Get rid of as many self references as possible. Object oriented with a strong functional approach.
+* 'yolov8n' is repeated in code 3 times (for one example). DRY. yolo models should be handled in the yolo inference and cli, but nowhere else.
+
 
 #### 5.1 New Main Application Structure
 **New Files:**
@@ -323,17 +378,39 @@ src/
 4. **Bug Fixes**: Fixed confidence tracking, motion thresholds, model analysis
 5. **New Features**: Confidence bridge, enhanced temporal validation
 
-### ⚠️ Remaining Refactoring Priorities (Updated)
-1. **CRITICAL**: Break up NextGenVideoProcessor (2,423 lines) - Phase 3 NEXT
-2. **HIGH**: Create pipeline architecture - Phase 3
-3. **MEDIUM**: Extract motion detection and tracking - Phase 4
-4. **LOW**: Final cleanup and package structure - Phase 5
+### ✅ Phase 2 COMPLETED - ML Model Management & CLI Cleanup
+1. **ML Architecture Refactoring**: 973-line MLDetectionEnsemble broken into 6+ focused components
+2. **Modular ML Package**: Created ml/ package with clear separation of concerns
+3. **Backward Compatibility**: Maintained through ensemble wrapper pattern
+4. **CLI Centralization**: Moved all argument parsing to ConfigurationManager
+5. **Updated Defaults**: Set optimized parameter defaults for current workflow
+6. **Import Updates**: Updated all imports to use new modular architecture
 
-### Updated Code Metrics (After Phase 2)
-- **process.py**: 2,423 lines (unchanged) ⚠️ Next target
+### ✅ Phase 3 COMPLETED - Processing Pipeline Architecture
+1. **Pipeline Extraction**: Successfully extracted 2,413-line NextGenVideoProcessor into modular pipeline
+2. **Motion Detection Package**: Created motion/ package with sophisticated detection and tracking
+3. **Pipeline Architecture**: Built flexible pipeline with step interface and orchestrator
+4. **Camera Handling Filter**: Extracted complex frame coverage analysis with spatial clustering
+5. **Full-Frame Validation**: Modularized ensemble ML validation with spatial overlap verification
+6. **Algorithm Preservation**: Maintained all sophisticated algorithms while improving maintainability
+7. **Parameter Dictionary Elimination**: Eliminated all magic string parameter access, replaced with ProcessingConfig object passing
+8. **Clean Architecture**: Config objects passed to functions instead of stored in self, following SOLID principles
+
+### ⚠️ Remaining Refactoring Priorities (Updated)
+1. **MEDIUM**: Extract tracking systems (DeepSORT integration) - Phase 4
+2. **MEDIUM**: Create final application wrapper classes - Phase 5
+3. **LOW**: Final cleanup and package structure - Phase 5
+
+### Updated Code Metrics (After Phase 3)
+- **process.py**: 2,413 lines → **102 lines** (-95.8% reduction) ✅ Massive breakthrough
+- **wildlife_processor.py**: 229 lines (clean pipeline orchestration) ✅ New modular implementation  
+- **pipeline/ package**: 10+ focused components (motion detection, camera handling, validation) ✅ Major improvement
+- **motion/ package**: 4 focused components (detection, tracking, background subtraction) ✅ Major improvement
 - **video_processor_base.py**: 480 lines (was 846, -43% reduction) ✅ Major improvement
-- **ml_detection.py**: 973 lines → **ml/ package** (6+ focused components) ✅ Major improvement
-- **Total complexity**: Significantly reduced with modular ML architecture, but large processing pipeline remains
+- **ml/ package**: 6+ focused components (was 973-line monolith) ✅ Major improvement
+- **CLI Management**: Centralized in ConfigurationManager ✅ Major improvement
+- **Parameter Management**: Zero magic strings, all config object based ✅ Clean architecture achieved
+- **Total complexity**: Dramatically reduced with modular architecture - **core refactoring objectives achieved**
 
 ## Implementation Benefits
 

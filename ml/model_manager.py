@@ -49,30 +49,6 @@ class ModelManager:
         self.megadetector_variants: Dict[str, Optional[object]] = {}
         self.feature_extractor: Optional[object] = None
         
-        # Model-specific confidence thresholds (optimized for recall)
-        self.model_thresholds = {
-            'yolov8x': 0.05,           # Primary YOLO model
-            'yolov8m': 0.08,           # Medium YOLO model
-            'yolo12x': 0.05,           # YOLO v12 variants
-            'yolo12m': 0.08,
-            'yolo12s': 0.10,
-            'yolo12n': 0.12,
-            'yolo12l': 0.05,
-            'yolov10x': 0.05,          # YOLO v10 variants
-            'yolov10l': 0.05,
-            'yolov10m': 0.08,
-            'yolov10s': 0.10,
-            'yolov10n': 0.12,
-            'yolov10b': 0.08,
-            'rtdetr-l': 0.1,           # RT-DETR large (full-frame only)
-            'rtdetr-x': 0.1,           # RT-DETR extra large (full-frame only)
-            'MDV6-yolov9-e': 0.1,      # YOLOv9 variant (balanced)
-            'MDV6-yolov9-c': 0.1,      # YOLOv9 compact
-            'MDV6-yolov10-e': 0.1,     # YOLOv10 variants
-            'MDV6-yolov10-c': 0.1,
-            'MDV6-rtdetr-c': 0.1,      # RT-DETR MegaDetector variant
-            'deepfaune': 0.15          # Conservative for classification model
-        }
         
         # Initialize models
         self._initialize_models()
@@ -198,9 +174,9 @@ class ModelManager:
         
         return None
     
-    def get_model_threshold(self, model_name: str) -> float:
-        """Get the confidence threshold for a specific model."""
-        return self.model_thresholds.get(model_name, 0.1)
+    def get_model_threshold(self, model_name: str, config) -> float:
+        """Get the confidence threshold for a specific model from config."""
+        return config.confidence_threshold
     
     def get_available_models(self) -> List[str]:
         """Get list of successfully loaded models."""

@@ -26,3 +26,4 @@ models_cache/
 .python-version
 uv.lock
 *.pt
+*.tmp

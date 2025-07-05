@@ -8,6 +8,9 @@ import logging
 from typing import List, Dict
 import numpy as np
 
+# Import constants
+from ..constants import MODEL_DETECTION_THRESHOLD
+
 logger = logging.getLogger('wildcams')
 
 class MegaDetectorInferenceEngine:
@@ -22,7 +25,7 @@ class MegaDetectorInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, full_frame: np.ndarray = None, **kwargs) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None, **kwargs) -> List[Dict]:
         """
         Run MegaDetector detection on a frame.
         
@@ -50,67 +53,72 @@ class MegaDetectorInferenceEngine:
             logger.error(f"MegaDetector model {model_name} not available")
             return detections
         
-        try:
-            # Convert BGR to RGB for MegaDetector
-            rgb_frame = cv2.cvtColor(full_frame, cv2.COLOR_BGR2RGB)
-            
-            # Get model-specific threshold
-            threshold = self.model_manager.get_model_threshold(model_name)
-            
-            # Run MegaDetector inference
-            results = md_model.single_image_detection(
-                rgb_frame,
-                det_conf_thres=threshold
-            )
-            
-            # Process MegaDetector results
-            if results and 'detections' in results:
-                for detection in results['detections']:
+        # Convert BGR to RGB for MegaDetector
+        rgb_frame = cv2.cvtColor(full_frame, cv2.COLOR_BGR2RGB)
+        
+        # Get model-specific threshold
+        threshold = self.model_manager.get_model_threshold(model_name, config)
+        
+        # Run MegaDetector inference
+        results = md_model.single_image_detection(
+            rgb_frame,
+            det_conf_thres=threshold
+        )
+        
+        # Process MegaDetector results
+        if results and 'detections' in results:
+            for detection in results['detections']:
+                # Handle case where detection might be a tuple instead of dict
+                if isinstance(detection, tuple):
+                    # Parse tuple format: (bbox_array, ?, confidence, class_id, ?, metadata)
+                    if len(detection) >= 4:
+                        bbox_array = detection[0]
+                        confidence = float(detection[2])
+                        class_id = int(detection[3])
+                        
+                        # Convert numpy array bbox to list
+                        if hasattr(bbox_array, 'tolist'):
+                            bbox = bbox_array.tolist()
+                        else:
+                            bbox = list(bbox_array)
+                        
+                        # Map class ID to category (MegaDetector standard classes)
+                        class_mapping = {0: 'empty', 1: 'animal', 2: 'person', 3: 'vehicle'}
+                        category = class_mapping.get(class_id, 'unknown')
+                        
+                        logger.debug(f"MegaDetector tuple parsed: bbox={bbox}, conf={confidence:.3f}, class={category}")
+                    else:
+                        logger.warning(f"MegaDetector returned malformed tuple: {detection}")
+                        continue
+                else:
+                    # Standard dict format
                     bbox = detection.get('bbox', [])
                     confidence = detection.get('conf', 0.0)
                     category = detection.get('category', 'unknown')
+                
+                if len(bbox) == 4 and confidence > 0:
+                    # MegaDetector returns normalized coordinates, convert to pixels
+                    h, w = full_frame.shape[:2]
+                    x1, y1, width, height = bbox
+                    x2 = x1 + width
+                    y2 = y1 + height
                     
-                    if len(bbox) == 4 and confidence > 0:
-                        # MegaDetector returns normalized coordinates, convert to pixels
-                        h, w = full_frame.shape[:2]
-                        x1, y1, width, height = bbox
-                        x2 = x1 + width
-                        y2 = y1 + height
-                        
-                        # Convert to absolute coordinates
-                        pixel_bbox = [
-                            x1 * w,  # x1
-                            y1 * h,  # y1
-                            x2 * w,  # x2
-                            y2 * h   # y2
-                        ]
-                        
-                        detection_dict = {
-                            'confidence': float(confidence),
-                            'bbox': pixel_bbox,
-                            'source': model_name,
-                            'class': category,
-                            'megadetector_category': category
-                        }
-                        detections.append(detection_dict)
-                        
-        except KeyError as ke:
-            # Handle PyTorch-Wildlife bug with unknown class IDs
-            logger.info(f"🔍 MegaDetector v6 ({model_name}) detected unknown class ID {ke} - class not in standard mapping")
-            
-            try:
-                # Handle raw Ultralytics results with potentially unknown class IDs
-                logger.info("Processing MegaDetector v6 raw results with extended class IDs")
-                
-                # Fallback processing for MegaDetector with extended classes
-                # This is where we would handle extended class processing if needed
-                pass
-                
-            except Exception as e2:
-                logger.error(f"MegaDetector {model_name} extended processing failed: {e2}")
-                
-        except Exception as e:
-            logger.error(f"MegaDetector {model_name} failed: {e}")
+                    # Convert to absolute coordinates
+                    pixel_bbox = [
+                        x1 * w,  # x1
+                        y1 * h,  # y1
+                        x2 * w,  # x2
+                        y2 * h   # y2
+                    ]
+                    
+                    detection_dict = {
+                        'confidence': float(confidence),
+                        'bbox': pixel_bbox,
+                        'source': model_name,
+                        'class': category,
+                        'megadetector_category': category
+                    }
+                    detections.append(detection_dict)
         
         return detections
     

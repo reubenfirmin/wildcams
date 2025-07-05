@@ -41,7 +41,7 @@ class EnsembleCoordinator:
         # Get available models
         self.ensemble_models = model_manager.ensemble_models
     
-    def run_single_model_detection(self, model_name: str, frame: np.ndarray, 
+    def run_single_model_detection(self, model_name: str, frame: np.ndarray, config,
                                  timestamp_seconds: float = 0.0, frame_idx: int = 0, 
                                  full_frame: np.ndarray = None, 
                                  accepted_rtdetr_overlap: float = 0.5) -> List[Dict]:
@@ -66,6 +66,7 @@ class EnsembleCoordinator:
             detections = self.yolo_engine.run_detection(
                 model_name=model_name,
                 frame=frame,
+                config=config,
                 timestamp_seconds=timestamp_seconds,
                 frame_idx=frame_idx
             )
@@ -73,6 +74,7 @@ class EnsembleCoordinator:
             detections = self.rtdetr_engine.run_detection(
                 model_name=model_name,
                 frame=frame,
+                config=config,
                 full_frame=full_frame,
                 timestamp_seconds=timestamp_seconds,
                 frame_idx=frame_idx
@@ -81,6 +83,7 @@ class EnsembleCoordinator:
             detections = self.megadetector_engine.run_detection(
                 model_name=model_name,
                 frame=frame,
+                config=config,
                 full_frame=full_frame,
                 timestamp_seconds=timestamp_seconds,
                 frame_idx=frame_idx
@@ -90,7 +93,7 @@ class EnsembleCoordinator:
         
         return detections
     
-    def run_ensemble_detection(self, frame: np.ndarray, timestamp_seconds: float = 0.0, 
+    def run_ensemble_detection(self, frame: np.ndarray, config, timestamp_seconds: float = 0.0, 
                              frame_idx: int = 0, full_frame: np.ndarray = None) -> List[Dict]:
         """
         Run detection across all models in the ensemble.
@@ -107,18 +110,15 @@ class EnsembleCoordinator:
         all_detections = []
         
         for model_name in self.ensemble_models:
-            try:
-                model_detections = self.run_single_model_detection(
-                    model_name=model_name,
-                    frame=frame,
-                    timestamp_seconds=timestamp_seconds,
-                    frame_idx=frame_idx,
-                    full_frame=full_frame
-                )
-                all_detections.extend(model_detections)
-                
-            except Exception as e:
-                logger.error(f"Ensemble detection failed for {model_name}: {e}")
+            model_detections = self.run_single_model_detection(
+                model_name=model_name,
+                frame=frame,
+                config=config,
+                timestamp_seconds=timestamp_seconds,
+                frame_idx=frame_idx,
+                full_frame=full_frame
+            )
+            all_detections.extend(model_detections)
         
         return all_detections
     
@@ -176,39 +176,31 @@ class EnsembleCoordinator:
         """
         detections = []
         
-        try:
-            # Get multi-scale frames
-            multiscale_frames = self.preprocessor.apply_multiscale_detection(frame)
-            
-            for scaled_frame, scale_factor, scale_name in multiscale_frames:
-                try:
-                    # Run ensemble detection on scaled frame
-                    scale_detections = self.run_ensemble_detection(
-                        frame=scaled_frame,
-                        timestamp_seconds=timestamp_seconds,
-                        full_frame=scaled_frame
-                    )
-                    
-                    # Adjust coordinates back to original scale
-                    if scale_factor != 1.0:
-                        scale_detections = self.postprocessor.convert_coordinates(
-                            scale_detections,
-                            source_size=(int(frame.shape[1] * scale_factor), int(frame.shape[0] * scale_factor)),
-                            target_size=(frame.shape[1], frame.shape[0])
-                        )
-                    
-                    # Add scale metadata
-                    for det in scale_detections:
-                        det['scale_factor'] = scale_factor
-                        det['scale_name'] = scale_name
-                    
-                    detections.extend(scale_detections)
-                    
-                except Exception as e:
-                    logger.error(f"Multi-scale analysis at {scale_factor}x failed: {e}")
+        # Get multi-scale frames
+        multiscale_frames = self.preprocessor.apply_multiscale_detection(frame)
         
-        except Exception as e:
-            logger.error(f"Multi-scale analysis failed: {e}")
+        for scaled_frame, scale_factor, scale_name in multiscale_frames:
+            # Run ensemble detection on scaled frame
+            scale_detections = self.run_ensemble_detection(
+                frame=scaled_frame,
+                timestamp_seconds=timestamp_seconds,
+                full_frame=scaled_frame
+            )
+            
+            # Adjust coordinates back to original scale
+            if scale_factor != 1.0:
+                scale_detections = self.postprocessor.convert_coordinates(
+                    scale_detections,
+                    source_size=(int(frame.shape[1] * scale_factor), int(frame.shape[0] * scale_factor)),
+                    target_size=(frame.shape[1], frame.shape[0])
+                )
+            
+            # Add scale metadata
+            for det in scale_detections:
+                det['scale_factor'] = scale_factor
+                det['scale_name'] = scale_name
+            
+            detections.extend(scale_detections)
         
         return detections
     

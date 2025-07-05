@@ -9,8 +9,8 @@ import numpy as np
 
 logger = logging.getLogger('wildcams')
 
-# Model detection threshold - minimal value to see ALL detections before ensemble filtering
-MODEL_DETECTION_THRESHOLD = 0.001
+# Import constants
+from ..constants import MODEL_DETECTION_THRESHOLD
 
 class YOLOInferenceEngine:
     """Handles inference for YOLO model variants."""
@@ -24,7 +24,7 @@ class YOLOInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, **kwargs) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config, **kwargs) -> List[Dict]:
         """
         Run YOLO detection on a frame.
         
@@ -47,25 +47,21 @@ class YOLOInferenceEngine:
             logger.error(f"YOLO model {model_name} not available")
             return detections
         
-        try:
-            results = detector(frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)
-            
-            for result in results:
-                if hasattr(result, 'boxes') and result.boxes is not None:
-                    for box in result.boxes:
-                        confidence = float(box.conf)
-                        bbox = box.xyxy.tolist()[0]
-                        
-                        detection = {
-                            'confidence': confidence,
-                            'bbox': bbox,
-                            'source': model_name,
-                            'class': 'animal'  # YOLO models detect generic animals
-                        }
-                        detections.append(detection)
-                        
-        except Exception as e:
-            logger.error(f"{model_name} YOLO model failed: {e}")
+        results = detector(frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)
+        
+        for result in results:
+            if hasattr(result, 'boxes') and result.boxes is not None:
+                for box in result.boxes:
+                    confidence = float(box.conf)
+                    bbox = box.xyxy.tolist()[0]
+                    
+                    detection = {
+                        'confidence': confidence,
+                        'bbox': bbox,
+                        'source': model_name,
+                        'class': 'animal'  # YOLO models detect generic animals
+                    }
+                    detections.append(detection)
         
         return detections
     

@@ -43,8 +43,8 @@ class MLDetectionEnsemble:
         if self.model_manager.feature_extractor is not None:
             self.feature_extractor_component = FeatureExtractor(self.model_manager.feature_extractor)
         
-        # Store model thresholds for backward compatibility
-        self.model_thresholds = self.model_manager.model_thresholds
+        # Use global confidence threshold only
+        self.confidence_threshold = confidence_threshold
         
         # Detection scales for backward compatibility
         self.detection_scales = self.ensemble_coordinator.preprocessor.detection_scales
@@ -55,20 +55,20 @@ class MLDetectionEnsemble:
     
     # Backward compatibility methods
     
-    def run_single_model_detection(self, model_name: str, frame: np.ndarray, 
+    def run_single_model_detection(self, model_name: str, frame: np.ndarray, config,
                                  timestamp_seconds: float = 0.0, frame_idx: int = 0, 
                                  full_frame: np.ndarray = None, 
                                  accepted_rtdetr_overlap: float = 0.5) -> List[Dict]:
         """Run detection on a single model - backward compatibility."""
         return self.ensemble_coordinator.run_single_model_detection(
-            model_name, frame, timestamp_seconds, frame_idx, full_frame, accepted_rtdetr_overlap
+            model_name, frame, config, timestamp_seconds, frame_idx, full_frame, accepted_rtdetr_overlap
         )
     
-    def run_ensemble_detection(self, frame: np.ndarray, timestamp_seconds: float = 0.0, 
+    def run_ensemble_detection(self, frame: np.ndarray, config, timestamp_seconds: float = 0.0, 
                              frame_idx: int = 0, full_frame: np.ndarray = None) -> List[Dict]:
         """Run ensemble detection - backward compatibility."""
         return self.ensemble_coordinator.run_ensemble_detection(
-            frame, timestamp_seconds, frame_idx, full_frame
+            frame, config, timestamp_seconds, frame_idx, full_frame
         )
     
     def apply_tta_transforms(self, frame: np.ndarray):

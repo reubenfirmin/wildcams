@@ -9,8 +9,8 @@ import numpy as np
 
 logger = logging.getLogger('wildcams')
 
-# Model detection threshold - minimal value to see ALL detections before ensemble filtering
-MODEL_DETECTION_THRESHOLD = 0.001
+# Import constants
+from ..constants import MODEL_DETECTION_THRESHOLD
 
 class RTDETRInferenceEngine:
     """Handles inference for RT-DETR model variants."""
@@ -24,7 +24,7 @@ class RTDETRInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, full_frame: np.ndarray = None, **kwargs) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None, **kwargs) -> List[Dict]:
         """
         Run RT-DETR detection on a frame.
         
@@ -52,25 +52,21 @@ class RTDETRInferenceEngine:
             logger.error(f"RT-DETR model {model_name} not available")
             return detections
         
-        try:
-            results = rtdetr_model(full_frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)
-            
-            for result in results:
-                if hasattr(result, 'boxes') and result.boxes is not None:
-                    for box in result.boxes:
-                        confidence = float(box.conf)
-                        bbox = box.xyxy.tolist()[0]
-                        
-                        detection = {
-                            'confidence': confidence,
-                            'bbox': bbox,
-                            'source': f'rtdetr_{model_name}',
-                            'class': 'animal'  # RT-DETR models detect generic animals
-                        }
-                        detections.append(detection)
-                        
-        except Exception as e:
-            logger.error(f"{model_name} RT-DETR model failed: {e}")
+        results = rtdetr_model(full_frame, conf=MODEL_DETECTION_THRESHOLD, verbose=False)
+        
+        for result in results:
+            if hasattr(result, 'boxes') and result.boxes is not None:
+                for box in result.boxes:
+                    confidence = float(box.conf)
+                    bbox = box.xyxy.tolist()[0]
+                    
+                    detection = {
+                        'confidence': confidence,
+                        'bbox': bbox,
+                        'source': f'rtdetr_{model_name}',
+                        'class': 'animal'  # RT-DETR models detect generic animals
+                    }
+                    detections.append(detection)
         
         return detections
     

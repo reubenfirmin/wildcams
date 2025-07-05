@@ -14,15 +14,19 @@ class ConfigurationManager:
     
     def setup_common_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Add common arguments to an argument parser."""
+        # Video selection
+        parser.add_argument('--videos', '-v', nargs='+', 
+                           help='Optional list of video indices (e.g. 7 8 9) or names to process')
+        
         # Model configuration  
-        parser.add_argument('--ensemble', '-e', default='yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c',
-                           help='Comma-separated list of models to use in ensemble. Available: yolov8x,yolov8m,yolov8n,yolov10n,yolov10s,yolov10m,yolov10b,yolov10l,yolov10x,yolo12n,yolo12s,yolo12m,yolo12l,yolo12x,MDV6-yolov9-c,MDV6-yolov9-e,MDV6-yolov10-c,MDV6-yolov10-e,MDV6-rtdetr-c (default: yolov8x,yolov8m,MDV6-yolov10-e,MDV6-rtdetr-c)')
+        parser.add_argument('--ensemble', '-e', default='yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l',
+                           help='Comma-separated list of models to use in ensemble. Available: yolov8x,yolov8m,yolov8n,yolov10n,yolov10s,yolov10m,yolov10b,yolov10l,yolov10x,yolo12n,yolo12s,yolo12m,yolo12l,yolo12x,MDV6-yolov9-c,MDV6-yolov9-e,MDV6-yolov10-c,MDV6-yolov10-e,MDV6-rtdetr-c,rtdetr-l (default: yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l)')
         
         # Processing parameters
         parser.add_argument('--video-dir', default='./videos',
                            help='Directory containing videos to process (default: ./videos)')
-        parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.25,
-                           help='Confidence threshold for detections (default: 0.25)')
+        parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.8,
+                           help='Confidence threshold for detections (default: 0.8)')
         parser.add_argument('--max-frames', type=int, default=20,
                            help='Maximum frames to extract per video (default: 20)')
         
@@ -75,7 +79,7 @@ class ConfigurationManager:
         parser.add_argument('--motion-var-threshold', type=int, default=32,
                            help='Motion detection variance threshold - higher = less sensitive (default: 32)')
         parser.add_argument('--min-motion-area', type=int, default=300,
-                           help='Minimum motion area threshold in pixels (default: 2000)')
+                           help='Minimum motion area threshold in pixels (default: 300)')
         parser.add_argument('--max-motion-area', type=int, default=80000,
                            help='Maximum motion area threshold in pixels (default: 80000)')
         parser.add_argument('--motion-history', type=int, default=100,
@@ -116,16 +120,16 @@ class ConfigurationManager:
                            help='Maximum frames to validate with full ensemble (default: 5)')
         parser.add_argument('--temporal-spread-seconds', type=float, default=2.0,
                            help='Minimum seconds between selected validation frames (default: 2.0)')
-        parser.add_argument('--spatial-overlap-threshold', type=float, default=0.5,
-                           help='Minimum spatial overlap threshold between detections and motion regions (default: 0.5)')
+        parser.add_argument('--spatial-overlap-threshold', type=float, default=0.1,
+                           help='Minimum spatial overlap threshold between detections and motion regions (default: 0.1)')
         
         # Track infilling parameters
-        parser.add_argument('--enable-track-infilling', action='store_true',
-                           help='Enable track infilling to connect nearby tracks (default: False)')
-        parser.add_argument('--infill-max-gap-seconds', type=float, default=2.0,
-                           help='Maximum time gap in seconds to allow infilling between tracks (default: 2.0)')
-        parser.add_argument('--infill-max-distance-pixels', type=float, default=200.0,
-                           help='Maximum spatial distance in pixels to allow infilling between tracks (default: 200.0)')
+        parser.add_argument('--enable-track-infilling', action='store_true', default=True,
+                           help='Enable track infilling to connect nearby tracks (default: True)')
+        parser.add_argument('--infill-max-gap-seconds', type=float, default=0.7,
+                           help='Maximum time gap in seconds to allow infilling between tracks (default: 0.7)')
+        parser.add_argument('--infill-max-distance-pixels', type=float, default=350.0,
+                           help='Maximum spatial distance in pixels to allow infilling between tracks (default: 350.0)')
         parser.add_argument('--infill-min-overlap-ratio', type=float, default=0.3,
                            help='Minimum bbox overlap ratio to consider tracks for infilling (default: 0.3)')
         
@@ -248,3 +252,15 @@ class ConfigurationManager:
         config_dict = self._config.__dict__.copy()
         config_dict.update(kwargs)
         self._config = ProcessingConfig(**config_dict)
+    
+    def parse_video_filter(self, args) -> Optional[List]:
+        """Parse video filter from command line arguments."""
+        video_filter = None
+        if hasattr(args, 'videos') and args.videos:
+            video_filter = []
+            for video in args.videos:
+                try:
+                    video_filter.append(int(video))  # Try to convert to int (for indices)
+                except ValueError:
+                    video_filter.append(video)      # Keep as string (for filenames)
+        return video_filter

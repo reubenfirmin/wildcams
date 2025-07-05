@@ -35,26 +35,13 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 ./process.py --min-motion-area 300 --motion-var-threshold 32
 ```
 
-## File Structure
-```
-wildcams/
-├── knowledge/
-│   ├── CLAUDE.md              # This file - minimal context
-│   ├── theory.md              # Technical details and algorithms
-│   ├── procedures.md          # Common task procedures
-│   └── ml_detection.py        # Shared ML ensemble
-├── process.py                 # Main 3-step pipeline
-├── video_processor_base.py    # CLI and base functionality
-├── experiments.md             # Experimental results log
-└── logs/                      # Processing logs
-```
-
 ## Document Index
 
 ### Core Documentation
 - **knowledge/CLAUDE.md** - This file: minimal project context and procedures
 - **knowledge/theory.md** - Technical architecture, model details, validation algorithms
 - **knowledge/procedures.md** - Step-by-step procedures for common tasks
+- **knowledge/codestructure.md** - Code structure and organization
 - **experiments.md** - Experimental results and parameter tuning history
 
 
