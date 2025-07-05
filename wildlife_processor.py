@@ -182,6 +182,7 @@ class WildlifeVideoProcessor(VideoProcessorBase):
                     'video_name': video_path.name,
                     'detection': best_sequence['best_detection'],
                     'ensemble_score': best_sequence['ensemble_score'],
+                    'composite_score': best_sequence['composite_score'],  # Extract composite score
                     'validation_result': 'animals_detected',
                     'processing_time': (datetime.now() - video_start_time).total_seconds(),
                     'validated_sequences_count': len(validated_sequences),

@@ -503,7 +503,8 @@ class FullFrameValidator:
             }
         
         # Base ensemble score (sum of boosted model confidences)
-        base_score = sum(d['boosted_confidence'] for d in detections)
+        # Base score is sum of boosted confidences (distinct from ensemble/conf scores)
+        base_score = sum(d.get('boosted_confidence', 0.0) for d in detections)
         
         # 1. Temporal consistency (how dense are detections across track)
         track_duration_frames = len(track_frames)
@@ -524,6 +525,7 @@ class FullFrameValidator:
         
         # Calculate final score with all multipliers
         final_score = base_score * temporal_multiplier * consensus_multiplier * motion_multiplier * duration_bonus
+        
         
         return {
             'final_score': final_score,
