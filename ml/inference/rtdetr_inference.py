@@ -24,15 +24,18 @@ class RTDETRInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None, **kwargs) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None, 
+                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Dict]:
         """
         Run RT-DETR detection on a frame.
         
         Args:
             model_name: Name of RT-DETR model to use
             frame: Input frame (ignored for RT-DETR, uses full_frame)
+            config: Processing configuration
             full_frame: Full frame for detection (required for RT-DETR)
-            **kwargs: Additional arguments
+            timestamp_seconds: Timestamp of the frame in seconds
+            frame_idx: Index of the frame in the video
             
         Returns:
             List of detection dictionaries
@@ -64,7 +67,9 @@ class RTDETRInferenceEngine:
                         'confidence': confidence,
                         'bbox': bbox,
                         'source': f'rtdetr_{model_name}',
-                        'class': 'animal'  # RT-DETR models detect generic animals
+                        'class': 'animal',  # RT-DETR models detect generic animals
+                        'timestamp': timestamp_seconds,
+                        'frame_idx': frame_idx
                     }
                     detections.append(detection)
         

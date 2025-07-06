@@ -4,7 +4,7 @@ Provides the same interface as the original MLDetectionEnsemble.
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from pathlib import Path
 import numpy as np
 
@@ -71,11 +71,11 @@ class MLDetectionEnsemble:
             frame, config, timestamp_seconds, frame_idx, full_frame
         )
     
-    def apply_tta_transforms(self, frame: np.ndarray):
+    def apply_tta_transforms(self, frame: np.ndarray) -> List[np.ndarray]:
         """Apply TTA transforms - backward compatibility."""
         return self.ensemble_coordinator.preprocessor.apply_tta_transforms(frame)
     
-    def apply_multiscale_detection(self, frame: np.ndarray):
+    def apply_multiscale_detection(self, frame: np.ndarray) -> List[np.ndarray]:
         """Apply multiscale detection - backward compatibility."""
         return self.ensemble_coordinator.preprocessor.apply_multiscale_detection(frame)
     
@@ -108,21 +108,21 @@ class MLDetectionEnsemble:
     # Property accessors for backward compatibility
     
     @property
-    def yolo_detectors(self):
+    def yolo_detectors(self) -> Dict[str, Any]:
         """Access to YOLO detectors - backward compatibility."""
         return self.model_manager.yolo_detectors
     
     @property
-    def rtdetr_models(self):
+    def rtdetr_models(self) -> Dict[str, Any]:
         """Access to RT-DETR models - backward compatibility."""
         return self.model_manager.rtdetr_models
     
     @property
-    def megadetector_variants(self):
+    def megadetector_variants(self) -> Dict[str, Any]:
         """Access to MegaDetector variants - backward compatibility."""
         return self.model_manager.megadetector_variants
     
     @property
-    def feature_extractor(self):
+    def feature_extractor(self) -> Optional[Any]:
         """Access to feature extractor - backward compatibility."""
         return self.model_manager.feature_extractor

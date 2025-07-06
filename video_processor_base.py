@@ -21,7 +21,7 @@ import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Set, Tuple, Optional, Any
 from datetime import datetime
 import cv2
 import numpy as np
@@ -102,7 +102,7 @@ class VideoProcessorBase:
         logger.info(f"📊 Analysis output: {self.output_dir}")
         logger.info(f"📋 Logs directory: {self.logs_dir}")
     
-    def setup_logging(self):
+    def setup_logging(self) -> None:
         """Setup single logger to file and console."""
         # Create timestamp for this session
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -140,7 +140,7 @@ class VideoProcessorBase:
         logger.info(f"📋 Logging initialized - session {timestamp}")
         logger.info(f"📋 Log file: {log_file}")
     
-    def _log_model_configuration(self, config: ProcessingConfig):
+    def _log_model_configuration(self, config: ProcessingConfig) -> None:
         """Log the model configuration."""
         logger.info("=" * 80)
         logger.info("🎯 MODEL CONFIGURATION")
@@ -412,13 +412,13 @@ class VideoProcessorBase:
             analysis_logger.error(f"CLUSTERING: Failed with error: {e}")
             return {}
     
-    def save_clustering_results(self, clusters: Dict):
+    def save_clustering_results(self, clusters: Dict) -> None:
         """Save clustering results and feature data."""
         # Convert clusters dict to list format expected by AnalysisWriter
         clusters_list = [clusters] if clusters else []
         self.analysis_writer.save_clustering_results(clusters_list, self.all_features, self.video_metadata)
     
-    def _debug_numpy_objects(self, obj, path=""):
+    def _debug_numpy_objects(self, obj, path: str = "") -> None:
         """Debug helper to find numpy objects in nested data."""
         if hasattr(obj, 'dtype'):  # numpy array/scalar
             logger.error(f"Found numpy object at {path}: type={type(obj)}, dtype={obj.dtype}")
@@ -429,7 +429,7 @@ class VideoProcessorBase:
             for i, item in enumerate(obj):
                 self._debug_numpy_objects(item, f"{path}[{i}]")
 
-    def _convert_for_json(self, obj):
+    def _convert_for_json(self, obj) -> Any:
         """Convert numpy types and other non-JSON types for serialization."""
         import numpy as np
         
@@ -468,14 +468,14 @@ class VideoProcessorBase:
         else:
             return obj
 
-    def save_analysis(self, analysis: Dict, video_path: Path):
+    def save_analysis(self, analysis: Dict, video_path: Path) -> None:
         """Save analysis results to JSON file."""
         self.analysis_writer.save_analysis(video_path, analysis)
     
-    def mark_as_processed(self, video_path: Path):
+    def mark_as_processed(self, video_path: Path) -> None:
         """Create .processed marker file."""
         self.processed_tracker.mark_as_processed(video_path)
     
-    def generate_summary_report(self, all_analyses: List[Dict], clusters: Dict):
+    def generate_summary_report(self, all_analyses: List[Dict], clusters: Dict) -> None:
         """Generate a summary report of all processed videos."""
         self.analysis_writer.generate_summary_report(all_analyses)

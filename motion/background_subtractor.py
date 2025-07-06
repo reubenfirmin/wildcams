@@ -3,6 +3,7 @@
 import cv2
 import logging
 from typing import Dict, Any
+from config import ProcessingConfig
 
 logger = logging.getLogger('wildcams')
 
@@ -11,7 +12,7 @@ class BackgroundSubtractorFactory:
     """Factory for creating OpenCV background subtractors."""
     
     @staticmethod
-    def create_subtractor(method: str, config):
+    def create_subtractor(method: str, config: ProcessingConfig):
         """
         Create a background subtractor based on method and configuration.
         
@@ -30,7 +31,7 @@ class BackgroundSubtractorFactory:
             raise ValueError(f"Unknown background subtraction method: {method}")
     
     @staticmethod
-    def _create_mog2(config):
+    def _create_mog2(config: ProcessingConfig):
         """Create MOG2 background subtractor."""
         subtractor = cv2.createBackgroundSubtractorMOG2(
             detectShadows=True,
@@ -46,7 +47,7 @@ class BackgroundSubtractorFactory:
         return subtractor
     
     @staticmethod
-    def _create_knn(config):
+    def _create_knn(config: ProcessingConfig):
         """Create KNN background subtractor."""
         subtractor = cv2.createBackgroundSubtractorKNN(
             detectShadows=True,

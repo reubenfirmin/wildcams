@@ -1,9 +1,11 @@
 """Configuration manager for wildlife video processing."""
 
 import argparse
-from typing import Optional, List
+from typing import Optional, List, Union
 from .processing_config import ProcessingConfig
 from argparse import Namespace
+from constants import DEFAULT_ENSEMBLE_MODELS, DEFAULT_VIDEO_DIR
+from data_types import ConfigurationUpdate
 
 
 class ConfigurationManager:
@@ -19,11 +21,11 @@ class ConfigurationManager:
                            help='Optional list of video indices (e.g. 7 8 9) or names to process')
         
         # Model configuration  
-        parser.add_argument('--ensemble', '-e', default='yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l',
+        parser.add_argument('--ensemble', '-e', default=','.join(DEFAULT_ENSEMBLE_MODELS),
                            help='Comma-separated list of models to use in ensemble. Available: yolov8x,yolov8m,yolov8n,yolov10n,yolov10s,yolov10m,yolov10b,yolov10l,yolov10x,yolo12n,yolo12s,yolo12m,yolo12l,yolo12x,MDV6-yolov9-c,MDV6-yolov9-e,MDV6-yolov10-c,MDV6-yolov10-e,MDV6-rtdetr-c,rtdetr-l (default: yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l)')
         
         # Processing parameters
-        parser.add_argument('--video-dir', default='./videos',
+        parser.add_argument('--video-dir', default=DEFAULT_VIDEO_DIR,
                            help='Directory containing videos to process (default: ./videos)')
         parser.add_argument('--confidence-threshold', '--conf', type=float, default=0.8,
                            help='Confidence threshold for detections (default: 0.8)')
@@ -276,17 +278,17 @@ class ConfigurationManager:
             raise ValueError("Configuration not loaded. Call load_from_cli_args() first.")
         return self._config
     
-    def update_config(self, **kwargs) -> None:
-        """Update specific configuration parameters."""
+    def update_config(self, update: ConfigurationUpdate) -> None:
+        """Update specific configuration parameters using typed object."""
         if self._config is None:
             raise ValueError("Configuration not loaded. Call load_from_cli_args() first.")
         
         # Create new config with updated values
         config_dict = self._config.__dict__.copy()
-        config_dict.update(kwargs)
+        config_dict.update(update.to_dict())
         self._config = ProcessingConfig(**config_dict)
     
-    def parse_video_filter(self, args) -> Optional[List]:
+    def parse_video_filter(self, args: Namespace) -> Optional[List[Union[int, str]]]:
         """Parse video filter from command line arguments."""
         video_filter = None
         if hasattr(args, 'videos') and args.videos:

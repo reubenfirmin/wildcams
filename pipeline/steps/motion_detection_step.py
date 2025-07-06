@@ -1,4 +1,8 @@
-"""Motion detection step for wildlife video processing pipeline."""
+"""Motion detection step for wildlife video processing pipeline.
+
+WARNING: This step contains dictionary violations and should be replaced
+with the typed implementation in pipeline.typed_steps.
+"""
 
 import logging
 import cv2
@@ -58,6 +62,8 @@ class MotionDetectionStep(PipelineStep):
         # Get video properties
         cap = motion_detector.open_video_stream(video_path)
         if not cap:
+            # DICTIONARY VIOLATION: Using {} for data and metadata
+            # This violates Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=False,
                 data={},
@@ -74,6 +80,8 @@ class MotionDetectionStep(PipelineStep):
         min_motion_threshold = config.min_motion_threshold
         if total_frames < min_motion_threshold:
             logger.info(f"⏹️ Video too short ({total_frames} < {min_motion_threshold} frames) - skipping")
+            # DICTIONARY VIOLATIONS: Using {} for data and metadata
+            # These violate Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=True,
                 data={'motion_tracks': []},
@@ -94,6 +102,8 @@ class MotionDetectionStep(PipelineStep):
         # Check if any valid motion tracks were found
         if not motion_tracks:
             logger.info(f"⏹️ No motion tracks found - early exit")
+            # DICTIONARY VIOLATIONS: Using {} for data and metadata
+            # These violate Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=True,
                 data={'motion_tracks': []},
@@ -101,9 +111,9 @@ class MotionDetectionStep(PipelineStep):
                     'fps': fps,
                     'total_frames': total_frames,
                     'motion_tracks_count': 0,
-                    'large_region_count': self.motion_tracker.get_large_region_count(),
-                    'total_region_count': self.motion_tracker.get_total_region_count(),
-                    'initial_track_count': self.motion_tracker.get_initial_track_count()
+                    'large_region_count': motion_tracker.get_large_region_count(),
+                    'total_region_count': motion_tracker.get_total_region_count(),
+                    'initial_track_count': motion_tracker.get_initial_track_count()
                 },
                 early_exit=True,
                 early_exit_reason='No motion tracks found'
@@ -111,6 +121,8 @@ class MotionDetectionStep(PipelineStep):
         
         logger.info(f"✅ Motion detection completed: {len(motion_tracks)} tracks found")
         
+        # DICTIONARY VIOLATIONS: Using {} for data and metadata
+        # These violate Phase 5.0 no-dictionary rule
         return StepOutput(
             success=True,
             data={'motion_tracks': motion_tracks},

@@ -46,22 +46,15 @@ class CameraHandlingFilter:
         total_motion_area_per_frame = {}
         
         for track in motion_tracks:
-            for frame_idx in track['frames']:
+            # Work with typed MotionTrack objects
+            for region in track.regions:
+                frame_idx = region.frame_idx
                 frames_with_motion.add(frame_idx)
                 
-                # Get motion regions for this frame in this track
-                motion_regions = track.get('motion_regions', [])
-                if frame_idx < len(motion_regions) and motion_regions[frame_idx]:
-                    frame_area = 0
-                    for bbox in motion_regions[frame_idx]:
-                        if bbox:
-                            width = bbox[2] - bbox[0]
-                            height = bbox[3] - bbox[1]
-                            frame_area += width * height
-                    
-                    if frame_idx not in total_motion_area_per_frame:
-                        total_motion_area_per_frame[frame_idx] = 0
-                    total_motion_area_per_frame[frame_idx] += frame_area
+                # Add this region's area to the frame total
+                if frame_idx not in total_motion_area_per_frame:
+                    total_motion_area_per_frame[frame_idx] = 0
+                total_motion_area_per_frame[frame_idx] += region.area
         
         # Calculate frame coverage metrics
         temporal_coverage = len(frames_with_motion) / max(1, total_frames)  # 0.0-1.0
@@ -88,16 +81,15 @@ class CameraHandlingFilter:
         # Log spatial clustering details
         logger.info(f"  📊 SPATIAL CLUSTERING DEBUG:")
         for i, cluster in enumerate(spatial_clusters):
-            cluster_frames = sum(len(track['frames']) for track in cluster)
-            track_ids = [track['track_id'] for track in cluster]
+            cluster_frames = sum(len(track.regions) for track in cluster)
+            track_ids = [track.track_id for track in cluster]
             logger.info(f"    Cluster {i}: tracks={track_ids}, total_frames={cluster_frames}")
             
             # Show bbox positions for debugging
             for track in cluster:
-                motion_regions = track.get('motion_regions', [])
-                if motion_regions and motion_regions[0]:
-                    start_bbox = motion_regions[0][0]
-                    logger.info(f"      track_{track['track_id']}: start_bbox={start_bbox}")
+                if track.regions:
+                    start_bbox = track.regions[0].bbox
+                    logger.info(f"      track_{track.track_id}: start_bbox=({start_bbox.x1}, {start_bbox.y1}, {start_bbox.x2}, {start_bbox.y2})")
         
         # Calculate consistency penalty based on bbox variance within clusters
         consistency_penalty = self._calculate_bbox_consistency_penalty(spatial_clusters)
@@ -150,12 +142,11 @@ class CameraHandlingFilter:
         
         clusters = []
         for track in motion_tracks:
-            # Get representative bbox for this track (use start bbox)
-            motion_regions = track.get('motion_regions', [])
-            if not motion_regions or not motion_regions[0]:
+            # Get representative bbox for this track (use first region)
+            if not track.regions:
                 continue
             
-            track_bbox = motion_regions[0][0] if motion_regions[0] else None
+            track_bbox = track.regions[0].bbox
             if not track_bbox:
                 continue
             
@@ -163,13 +154,18 @@ class CameraHandlingFilter:
             assigned = False
             for cluster in clusters:
                 for cluster_track in cluster:
-                    cluster_regions = cluster_track.get('motion_regions', [])
-                    if cluster_regions and cluster_regions[0]:
-                        cluster_bbox = cluster_regions[0][0]
-                        if self._calculate_bbox_overlap(track_bbox, cluster_bbox) > 0.3:  # 30% overlap threshold
-                            cluster.append(track)
-                            assigned = True
-                            break
+                    if not cluster_track.regions:
+                        continue
+                    
+                    cluster_bbox = cluster_track.regions[0].bbox
+                    # Convert BoundingBox objects to coordinate lists for overlap calculation
+                    track_coords = [track_bbox.x1, track_bbox.y1, track_bbox.x2, track_bbox.y2]
+                    cluster_coords = [cluster_bbox.x1, cluster_bbox.y1, cluster_bbox.x2, cluster_bbox.y2]
+                    
+                    if self._calculate_bbox_overlap(track_coords, cluster_coords) > 0.3:  # 30% overlap threshold
+                        cluster.append(track)
+                        assigned = True
+                        break
                 if assigned:
                     break
             
@@ -193,7 +189,7 @@ class CameraHandlingFilter:
         logger.info(f"  📊 CONSISTENCY PENALTY DEBUG:")
         for i, cluster in enumerate(spatial_clusters):
             # Each spatial cluster starts with weight 1.0
-            cluster_frames = sum(len(track['frames']) for track in cluster)
+            cluster_frames = sum(len(track.regions) for track in cluster)
             
             if cluster_frames <= 1:
                 # Single frame = full weight

@@ -1,4 +1,8 @@
-"""Camera handling filter step for wildlife video processing pipeline."""
+"""Camera handling filter step for wildlife video processing pipeline.
+
+WARNING: This step contains dictionary violations and should be replaced
+with the typed implementation in pipeline.typed_steps.
+"""
 
 import logging
 from typing import Dict, Any
@@ -58,6 +62,8 @@ class CameraHandlingFilterStep(PipelineStep):
         # Handle empty motion tracks case
         if not motion_tracks:
             logger.info(f"⏹️ No motion tracks to filter - skipping camera handling detection")
+            # DICTIONARY VIOLATIONS: Using {} for data and metadata
+            # These violate Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=True,
                 data={'motion_tracks': []},
@@ -87,6 +93,8 @@ class CameraHandlingFilterStep(PipelineStep):
             composite_scores = self.camera_filter.get_composite_scores()
             
             logger.warning(f"⚠️ Camera handling detected - early exit")
+            # DICTIONARY VIOLATIONS: Using {} for data and metadata
+            # These violate Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=True,
                 data={'motion_tracks': []},
@@ -106,6 +114,8 @@ class CameraHandlingFilterStep(PipelineStep):
         composite_scores = self.camera_filter.get_composite_scores()
         composite_score = composite_scores.get(video_path.name, 0.0)
         
+        # DICTIONARY VIOLATIONS: Using {} for data and metadata
+        # These violate Phase 5.0 no-dictionary rule
         return StepOutput(
             success=True,
             data={'motion_tracks': filtered_tracks},

@@ -1,4 +1,8 @@
-"""Full-frame validation step for wildlife video processing pipeline."""
+"""Full-frame validation step for wildlife video processing pipeline.
+
+WARNING: This step contains dictionary violations and should be replaced
+with the typed implementation in pipeline.typed_steps.
+"""
 
 import logging
 from typing import Dict, Any
@@ -59,6 +63,8 @@ class FullFrameValidationStep(PipelineStep):
         # Handle empty motion tracks case
         if not motion_tracks:
             logger.info(f"⏹️ No motion tracks to validate - skipping full-frame analysis")
+            # DICTIONARY VIOLATIONS: Using {} for data and metadata
+            # These violate Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=True,
                 data={'validated_sequences': []},
@@ -77,6 +83,8 @@ class FullFrameValidationStep(PipelineStep):
         # Check if any sequences passed validation
         if not validated_sequences:
             logger.info(f"⏹️ No sequences passed validation - early exit")
+            # DICTIONARY VIOLATIONS: Using {} for data and metadata
+            # These violate Phase 5.0 no-dictionary rule
             return StepOutput(
                 success=True,
                 data={'validated_sequences': []},
@@ -94,6 +102,8 @@ class FullFrameValidationStep(PipelineStep):
         # Get model contributions from validator
         model_contributions = self.validator.get_model_contributions()
         
+        # DICTIONARY VIOLATIONS: Using {} for data and metadata
+        # These violate Phase 5.0 no-dictionary rule
         return StepOutput(
             success=True,
             data={'validated_sequences': validated_sequences},

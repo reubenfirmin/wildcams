@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 
 from .background_subtractor import BackgroundSubtractorFactory
+from config import ProcessingConfig
+from constants import DEFAULT_MOTION_METHOD
 
 logger = logging.getLogger('wildcams')
 
@@ -14,7 +16,7 @@ logger = logging.getLogger('wildcams')
 class MotionDetector:
     """Detects motion regions in video frames using background subtraction."""
     
-    def __init__(self, config):
+    def __init__(self, config: ProcessingConfig):
         """
         Initialize motion detector with configuration.
         
@@ -25,7 +27,7 @@ class MotionDetector:
         self.analysis_subtractor = None
         self._init_motion_detector(config)
     
-    def _init_motion_detector(self, config):
+    def _init_motion_detector(self, config: ProcessingConfig):
         """Initialize motion detection algorithm."""
         method = config.motion_method
         
@@ -37,7 +39,7 @@ class MotionDetector:
         logger.info(f"📐 Region size: min {config.min_region_width}x{config.min_region_height}")
         logger.info(f"📏 Max aspect ratio: {config.max_aspect_ratio}")
     
-    def create_analysis_motion_detector(self, config):
+    def create_analysis_motion_detector(self, config: ProcessingConfig) -> Any:
         """Create a separate motion detector for analysis (if needed)."""
         if self.analysis_subtractor is None:
             method = config.motion_method
@@ -56,7 +58,7 @@ class MotionDetector:
         logger.error(f"❌ Could not open video with any backend: {video_path}")
         return None
     
-    def detect_motion_regions(self, frame: np.ndarray, config) -> List[Tuple[int, int, int, int]]:
+    def detect_motion_regions(self, frame: np.ndarray, config: ProcessingConfig) -> List[Tuple[int, int, int, int]]:
         """
         Detect motion regions in frame using background subtraction.
         
@@ -146,7 +148,7 @@ class MotionDetector:
         
         return motion_regions
     
-    def detect_motion_regions_with_subtractor(self, frame: np.ndarray, bg_subtractor, config) -> List[Tuple[int, int, int, int]]:
+    def detect_motion_regions_with_subtractor(self, frame: np.ndarray, bg_subtractor, config: ProcessingConfig) -> List[Tuple[int, int, int, int]]:
         """Detect motion regions using a specific background subtractor and config."""
         # Apply background subtraction
         fg_mask = bg_subtractor.apply(frame)

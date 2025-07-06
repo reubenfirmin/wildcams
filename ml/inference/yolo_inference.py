@@ -24,14 +24,17 @@ class YOLOInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, config, **kwargs) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config, 
+                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Dict]:
         """
         Run YOLO detection on a frame.
         
         Args:
             model_name: Name of YOLO model to use
             frame: Input frame
-            **kwargs: Additional arguments (ignored for YOLO)
+            config: Processing configuration
+            timestamp_seconds: Timestamp of the frame in seconds
+            frame_idx: Index of the frame in the video
             
         Returns:
             List of detection dictionaries
@@ -59,7 +62,9 @@ class YOLOInferenceEngine:
                         'confidence': confidence,
                         'bbox': bbox,
                         'source': model_name,
-                        'class': 'animal'  # YOLO models detect generic animals
+                        'class': 'animal',  # YOLO models detect generic animals
+                        'timestamp': timestamp_seconds,
+                        'frame_idx': frame_idx
                     }
                     detections.append(detection)
         

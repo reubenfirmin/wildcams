@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 import numpy as np
 
@@ -15,29 +15,32 @@ class StepInput:
     timestamps: Optional[List[float]] = None
     motion_tracks: Optional[List[Dict]] = None
     detections: Optional[List[Dict]] = None
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional['StepMetadata'] = None
     
     def __post_init__(self):
         """Initialize metadata if not provided."""
         if self.metadata is None:
-            self.metadata = {}
+            from data_types import StepMetadata
+            self.metadata = StepMetadata(step_name='input')
 
 
 @dataclass 
 class StepOutput:
     """Output data structure for pipeline steps."""
     success: bool
-    data: Dict[str, Any]
-    metadata: Dict[str, Any]
+    data: Union['MotionTrackData', 'ValidationSequenceData']
+    metadata: 'StepMetadata'
     early_exit: bool = False
     early_exit_reason: Optional[str] = None
     
     def __post_init__(self):
         """Initialize data and metadata if not provided."""
         if self.data is None:
-            self.data = {}
+            from data_types import MotionTrackData
+            self.data = MotionTrackData()
         if self.metadata is None:
-            self.metadata = {}
+            from data_types import StepMetadata
+            self.metadata = StepMetadata(step_name='output')
 
 
 class PipelineStep(ABC):

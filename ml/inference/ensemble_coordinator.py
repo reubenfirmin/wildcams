@@ -122,12 +122,13 @@ class EnsembleCoordinator:
         
         return all_detections
     
-    def run_enhanced_preprocessing(self, frame: np.ndarray) -> List[Dict]:
+    def run_enhanced_preprocessing(self, frame: np.ndarray, config) -> List[Dict]:
         """
         Run detection with enhanced preprocessing (TTA, multi-scale).
         
         Args:
             frame: Input frame
+            config: Processing configuration
             
         Returns:
             List of detections from enhanced preprocessing
@@ -145,6 +146,7 @@ class EnsembleCoordinator:
                 # Run ensemble on this processed frame
                 detections = self.run_ensemble_detection(
                     frame=scaled_frame,
+                    config=config,
                     full_frame=scaled_frame  # Use scaled frame as full frame too
                 )
                 
@@ -163,12 +165,13 @@ class EnsembleCoordinator:
         
         return all_detections
     
-    def run_multiscale_analysis(self, frame: np.ndarray, timestamp_seconds: float = 0.0) -> List[Dict]:
+    def run_multiscale_analysis(self, frame: np.ndarray, config, timestamp_seconds: float = 0.0) -> List[Dict]:
         """
         Run detection with multi-scale analysis.
         
         Args:
             frame: Input frame
+            config: Processing configuration
             timestamp_seconds: Timestamp of frame
             
         Returns:
@@ -183,6 +186,7 @@ class EnsembleCoordinator:
             # Run ensemble detection on scaled frame
             scale_detections = self.run_ensemble_detection(
                 frame=scaled_frame,
+                config=config,
                 timestamp_seconds=timestamp_seconds,
                 full_frame=scaled_frame
             )

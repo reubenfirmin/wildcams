@@ -5,6 +5,9 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
+from data_types import CompositeScore
+from data import MotionTrack, ValidationSequence, Detection, BoundingBox, Track
+
 logger = logging.getLogger('wildcams')
 
 
@@ -26,7 +29,7 @@ class FullFrameValidator:
         
         logger.info(f"🎯 Full-Frame Validator initialized")
     
-    def validate_motion_tracks(self, video_path: Path, motion_tracks: List[Dict], config) -> List[Dict]:
+    def validate_motion_tracks(self, video_path: Path, motion_tracks: List[MotionTrack], config) -> List[ValidationSequence]:
         """
         Run full-frame analysis on motion tracks with spatial overlap validation.
         
@@ -87,24 +90,24 @@ class FullFrameValidator:
         
         return validated_results
     
-    def _build_extended_tracks(self, motion_tracks: List[Dict], fps: float, total_frames: int) -> List[Dict]:
+    def _build_extended_tracks(self, motion_tracks: List[MotionTrack], fps: float, total_frames: int) -> List[Dict]:
         """Convert basic motion tracks to extended bbox tracks for spatial validation."""
         extended_tracks = []
         
         for motion_track in motion_tracks:
-            track_id = motion_track['track_id']
-            motion_frames = motion_track['frames']
-            motion_regions = motion_track.get('motion_regions', [])
+            track_id = motion_track.track_id
+            motion_frames = [region.frame_idx for region in motion_track.regions]
+            motion_regions = motion_track.regions
             
             if not motion_frames:
                 continue
             
             # Get representative bbox from motion regions
             if motion_regions and len(motion_regions) > 0:
-                first_region = motion_regions[0][0] if motion_regions[0] else [100, 100, 200, 200]
-                last_region = motion_regions[-1][-1] if motion_regions[-1] else first_region
-                first_known_position = list(first_region)
-                last_known_position = list(last_region)
+                first_region = motion_regions[0]
+                last_region = motion_regions[-1]
+                first_known_position = [first_region.bbox.x1, first_region.bbox.y1, first_region.bbox.x2, first_region.bbox.y2]
+                last_known_position = [last_region.bbox.x1, last_region.bbox.y1, last_region.bbox.x2, last_region.bbox.y2]
             else:
                 first_known_position = [100, 100, 200, 200]
                 last_known_position = first_known_position[:]
@@ -126,8 +129,16 @@ class FullFrameValidator:
             
             # Motion frames: use actual motion regions
             for i, frame_idx in enumerate(motion_frames):
-                if motion_regions and i < len(motion_regions) and motion_regions[i]:
-                    bbox = list(motion_regions[i][0])
+                # Find the motion region that corresponds to this frame
+                matching_region = None
+                for region in motion_regions:
+                    if region.frame_idx == frame_idx:
+                        matching_region = region
+                        break
+                
+                if matching_region:
+                    bbox = [matching_region.bbox.x1, matching_region.bbox.y1, 
+                           matching_region.bbox.x2, matching_region.bbox.y2]
                 else:
                     bbox = first_known_position.copy()
                     
@@ -162,7 +173,7 @@ class FullFrameValidator:
                     'motion_start_frame': motion_start_frame,
                     'motion_end_frame': motion_end_frame
                 },
-                'duration_seconds': motion_track['duration_seconds'],
+                'duration_seconds': motion_track.duration_seconds,
                 'motion_frames': len(motion_frames),
                 'original_motion_track': motion_track
             }
@@ -179,7 +190,7 @@ class FullFrameValidator:
         for track in extended_tracks:
             track_id = track['track_id']
             motion_track = track['original_motion_track']
-            motion_frames = motion_track['frames']
+            motion_frames = [region.frame_idx for region in motion_track.regions]
             
             # Sample frames from motion track
             if len(motion_frames) <= config.max_validation_frames:
@@ -410,40 +421,72 @@ class FullFrameValidator:
             logger.info(f"TRACK | {video_path.stem} | track_{track_id}")
             track_icon = "✅" if validation_passed else "❌"
             # Calculate composite score for logging (even for failed tracks)
-            composite_score = self._calculate_composite_score(track, detections, track_frames, fps) if detections else {'final_score': 0.0, 'consensus_models': 0, 'motion_alignment': 0.0, 'temporal_density': 0.0}
+            composite_score = self._calculate_composite_score(track, detections, track_frames, fps) if detections else CompositeScore.empty().to_dict()
             
             logger.info(f"{track_icon} | duration={track['duration_seconds']:.2f}s | frames_evaluated={len(track_frames)} | frames_passed={passed_frames} | detections={len(detections)} | summed_conf={summed_confidence:.3f} | avg_conf={avg_confidence:.3f} | max_conf={max_confidence:.3f} | ensemble={summed_boosted_confidence:.3f} | composite={composite_score['final_score']:.3f} | models={composite_score['consensus_models']} | motion_align={composite_score['motion_alignment']:.3f} | temp_density={composite_score['temporal_density']:.3f} | conf_pass={confidence_passed} | frames_pass={frames_passed} | temporal_pass={temporal_continuity_passed} | validated={validation_passed}")
             
             if validation_passed:
                 # Find best detection
-                best_detection = max(detections, key=lambda d: d['confidence'])
+                best_detection_dict = max(detections, key=lambda d: d['confidence'])
                 
                 # Calculate multi-dimensional confidence score
                 composite_score = self._calculate_composite_score(track, detections, track_frames, fps)
                 
-                validated_result = {
-                    'track_id': track_id,
-                    'best_detection': {
-                        'frame_idx': best_detection.get('frame_idx', track_frames[0]),
-                        'timestamp': best_detection.get('timestamp', track_frames[0] / fps),
-                        'bbox': best_detection['bbox'],
-                        'confidence': best_detection['confidence'],
-                        'source': f"fullframe_{best_detection.get('source', 'unknown')}",
-                        'motion_overlap': best_detection.get('motion_overlap', 0.0)
-                    },
-                    'ensemble_score': summed_boosted_confidence,  # Use summed boosted confidence for ensemble scoring
-                    'combined_score': summed_boosted_confidence,  # Use boosted for combined scoring
-                    'composite_score': composite_score['final_score'],  # Multi-dimensional confidence score
-                    'score_breakdown': composite_score,  # Detailed breakdown for analysis
-                    'summed_confidence': summed_confidence,  # Original for reporting
-                    'full_frame_avg_score': avg_confidence,  # Original for reporting
-                    'full_frame_max_score': max_confidence,  # Original for reporting
-                    'detection_count': len(detections),
-                    'validation_frames': len(track_frames),
-                    'duration_seconds': track['duration_seconds'],
-                    'validation_passed': True
-                }
-                validated_results.append(validated_result)
+                # Create typed best detection
+                best_detection_bbox = BoundingBox(
+                    best_detection_dict['bbox'][0],
+                    best_detection_dict['bbox'][1],
+                    best_detection_dict['bbox'][2],
+                    best_detection_dict['bbox'][3]
+                )
+                
+                best_detection = Detection(
+                    confidence=best_detection_dict['confidence'],
+                    bbox=best_detection_bbox,
+                    source=f"fullframe_{best_detection_dict.get('source', 'unknown')}",
+                    class_name='animal',
+                    timestamp=best_detection_dict.get('timestamp', track_frames[0] / fps),
+                    frame_idx=best_detection_dict.get('frame_idx', track_frames[0])
+                )
+                
+                # Convert all detections to typed objects
+                typed_detections = []
+                for det in detections:
+                    det_bbox = BoundingBox(det['bbox'][0], det['bbox'][1], det['bbox'][2], det['bbox'][3])
+                    typed_det = Detection(
+                        confidence=det['confidence'],
+                        bbox=det_bbox,
+                        source=det.get('source', 'unknown'),
+                        class_name='animal',
+                        timestamp=det.get('timestamp', 0.0),
+                        frame_idx=det.get('frame_idx', 0)
+                    )
+                    typed_detections.append(typed_det)
+                
+                # Create track object
+                track_obj = Track(
+                    track_id=track_id,
+                    detections=typed_detections,
+                    start_frame=min(track_frames),
+                    end_frame=max(track_frames),
+                    duration_seconds=track['duration_seconds'],
+                    confidence_scores=[d.confidence for d in typed_detections],
+                    bbox_sequence=[d.bbox for d in typed_detections]
+                )
+                
+                # Create validation sequence
+                validated_sequence = ValidationSequence(
+                    sequence_id=track_id,
+                    track=track_obj,
+                    detections=typed_detections,
+                    ensemble_score=summed_boosted_confidence,
+                    composite_score=composite_score['final_score'],
+                    best_detection=best_detection,
+                    frame_range=(min(track_frames), max(track_frames)),
+                    duration_seconds=track['duration_seconds']
+                )
+                
+                validated_results.append(validated_sequence)
         
         return validated_results
     

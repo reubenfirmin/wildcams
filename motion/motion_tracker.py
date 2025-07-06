@@ -6,6 +6,7 @@ from typing import Dict, List, Any
 import cv2
 
 from .motion_detector import MotionDetector
+from config import ProcessingConfig
 
 logger = logging.getLogger('wildcams')
 
@@ -13,7 +14,7 @@ logger = logging.getLogger('wildcams')
 class MotionTracker:
     """Tracks motion sequences and applies infilling to create temporal tracks."""
     
-    def __init__(self, motion_detector: MotionDetector, config):
+    def __init__(self, motion_detector: MotionDetector, config: ProcessingConfig):
         """
         Initialize motion tracker.
         
@@ -29,7 +30,7 @@ class MotionTracker:
         self._total_region_count = 0
         self._initial_track_count = 0
     
-    def find_consistent_motion_sequences_and_tracks(self, video_path: Path, fps: float, total_frames: int, config) -> List[Dict]:
+    def find_consistent_motion_sequences_and_tracks(self, video_path: Path, fps: float, total_frames: int, config: ProcessingConfig) -> List[Dict]:
         """STEP 1: Find sequences with consistent motion/tracking."""
         cap = self.motion_detector.open_video_stream(video_path)
         if not cap:
@@ -170,7 +171,7 @@ class MotionTracker:
         
         return motion_tracks
     
-    def _infill_motion_tracks(self, motion_tracks: List[Dict], fps: float, config) -> List[Dict]:
+    def _infill_motion_tracks(self, motion_tracks: List[Dict], fps: float, config: ProcessingConfig) -> List[Dict]:
         """Infill gaps between nearby motion tracks to create continuous tracks."""
         if not motion_tracks:
             return motion_tracks
@@ -224,7 +225,7 @@ class MotionTracker:
         
         return filtered_tracks
     
-    def _can_infill_tracks(self, track_a: Dict, track_b: Dict, fps: float, config) -> bool:
+    def _can_infill_tracks(self, track_a: Dict, track_b: Dict, fps: float, config: ProcessingConfig) -> bool:
         """Check if two tracks can be infilled based on spatial and temporal criteria."""
         # Get track boundaries
         frames_a = track_a['frames']
