@@ -64,8 +64,15 @@ class VideoProcessorBase:
         self.logs_dir.mkdir(exist_ok=True)
         self.models_cache_dir.mkdir(exist_ok=True)
         
-        # Setup logging for this session
-        self.setup_logging()
+        # Setup logging for this session (only if not already configured)
+        wildcams_logger = logging.getLogger('wildcams')
+        if not wildcams_logger.handlers:
+            self.setup_logging()
+        else:
+            logger.info(f"🎬 Video processor base initialized")
+            logger.info(f"📁 Video directory: {self.video_dir}")
+            logger.info(f"📊 Analysis output: {self.output_dir}")
+            logger.info(f"📋 Logs directory: logs")
         
         # Clean up debug directory from previous runs
         if self.debug_dir.exists():

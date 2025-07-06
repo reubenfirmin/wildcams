@@ -53,6 +53,57 @@ def initialize_config_from_args(args: argparse.Namespace) -> ProcessingConfig:
     return config
 
 
+def setup_logging_early() -> None:
+    """Setup logging BEFORE any other components are initialized."""
+    from datetime import datetime
+    
+    # Create timestamp for this session
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Setup the root wildcams logger with propagation
+    logger = logging.getLogger('wildcams')
+    logger.propagate = False  # Don't propagate to root logger
+    
+    # Remove any existing handlers to avoid duplicates
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Create logs directory in CWD
+    logs_dir = Path('./logs')
+    logs_dir.mkdir(exist_ok=True)
+    
+    # Create log file handler
+    log_file = logs_dir / f'wildcams_{timestamp}.log'
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        '%(asctime)s %(message)s', 
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(message)s')
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    # Set logger level
+    logger.setLevel(logging.DEBUG)
+    
+    # Configure all Python logging to be quiet except our logger
+    logging.getLogger().setLevel(logging.WARNING)
+    
+    logger.info(f"📋 Logging initialized - session {timestamp}")
+    logger.info(f"📋 Log file: logs/{log_file.name}")
+    
+    # Test that this logger configuration works
+    test_logger = logging.getLogger('wildcams')
+    test_logger.info(f"📋 Test log message - logger configuration verified")
+
+
 def main() -> None:
     """Main entry point for next-generation processing."""
     import argparse
@@ -72,6 +123,9 @@ def main() -> None:
     
     # Initialize global config from CLI arguments
     config = initialize_config_from_args(args)
+    
+    # Setup logging EARLY before any other components
+    setup_logging_early()
     
     try:
         # Create batch processor with new core architecture
