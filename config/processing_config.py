@@ -80,13 +80,3 @@ class ProcessingConfig:
     
     # Temporal continuity
     confidence_bridge_threshold: float
-    
-    # Tracking system configuration
-    tracking_method: str = 'auto'  # 'auto', 'deepsort', 'simple'
-    tracking_max_age: int = 50  # Max frames to keep track alive without detection
-    tracking_n_init: int = 3  # Number of consecutive detections before confirmation
-    tracking_max_iou_distance: float = 0.7  # Max IoU distance for track association
-    tracking_max_cosine_distance: float = 0.4  # Max cosine distance for appearance matching
-    tracking_nn_budget: int = 100  # Max size of appearance descriptor gallery
-    tracking_min_iou: float = 0.1  # Min IoU for simple tracker association
-    min_track_detections: int = 3  # Min detections required for valid track

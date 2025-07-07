@@ -139,26 +139,8 @@ class ConfigurationManager:
         parser.add_argument('--debug-show-spatially-invalid', action='store_true',
                            help='Show spatially invalid detections in logs (default: False)')
     
-    def setup_tracking_arguments(self, parser: argparse.ArgumentParser) -> None:
-        """Add tracking system specific arguments to an argument parser."""
-        parser.add_argument('--tracking-method', choices=['auto', 'deepsort', 'simple'], default='auto',
-                           help='Tracking method to use (default: auto)')
-        parser.add_argument('--tracking-max-age', type=int, default=50,
-                           help='Maximum frames to keep track alive without detection (default: 50)')
-        parser.add_argument('--tracking-n-init', type=int, default=3,
-                           help='Number of consecutive detections before track confirmation (default: 3)')
-        parser.add_argument('--tracking-max-iou-distance', type=float, default=0.7,
-                           help='Maximum IoU distance for track association (default: 0.7)')
-        parser.add_argument('--tracking-max-cosine-distance', type=float, default=0.4,
-                           help='Maximum cosine distance for appearance matching (default: 0.4)')
-        parser.add_argument('--tracking-nn-budget', type=int, default=100,
-                           help='Maximum size of appearance descriptor gallery (default: 100)')
-        parser.add_argument('--tracking-min-iou', type=float, default=0.1,
-                           help='Minimum IoU for simple tracker association (default: 0.1)')
-        parser.add_argument('--min-track-detections', type=int, default=3,
-                           help='Minimum detections required for valid track (default: 3)')
     
-    def load_from_cli_args(self, args, include_motion: bool = True, include_tracking: bool = True) -> None:
+    def load_from_cli_args(self, args, include_motion: bool = True) -> None:
         """Load configuration directly from command line arguments."""
         if isinstance(args, list):
             # If args is a list of strings, parse them
@@ -170,10 +152,6 @@ class ConfigurationManager:
             # Add motion detection arguments if requested
             if include_motion:
                 self.setup_motion_detection_arguments(parser)
-                
-            # Add tracking arguments if requested
-            if include_tracking:
-                self.setup_tracking_arguments(parser)
             
             # Parse arguments
             parsed_args = parser.parse_args(args)
@@ -259,17 +237,7 @@ class ConfigurationManager:
             min_samples=args.min_samples,
             
             # Temporal continuity
-            confidence_bridge_threshold=args.confidence_bridge_threshold,
-            
-            # Tracking system configuration
-            tracking_method=getattr(args, 'tracking_method', 'auto'),
-            tracking_max_age=getattr(args, 'tracking_max_age', 50),
-            tracking_n_init=getattr(args, 'tracking_n_init', 3),
-            tracking_max_iou_distance=getattr(args, 'tracking_max_iou_distance', 0.7),
-            tracking_max_cosine_distance=getattr(args, 'tracking_max_cosine_distance', 0.4),
-            tracking_nn_budget=getattr(args, 'tracking_nn_budget', 100),
-            tracking_min_iou=getattr(args, 'tracking_min_iou', 0.1),
-            min_track_detections=getattr(args, 'min_track_detections', 3)
+            confidence_bridge_threshold=args.confidence_bridge_threshold
         )
     
     def get_processing_config(self) -> ProcessingConfig:
