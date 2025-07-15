@@ -432,3 +432,47 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 4. Tracked best ensemble score per track from frame-level evaluation
 
 **Test Command:** `./process.py -v 8 9 10`
+
+## Step 4: Animal Classification Implementation: 2025-07-08 (Log: wildcams_20250708_051034.log)
+
+**Changes:** Implemented real BioCLIP and DeepFaune models replacing dummy classification
+1. **BioCLIP engine**: OpenCLIP model with Costa Rican wildlife classes
+2. **DeepFaune engine**: Binary animal vs non-animal classification  
+3. **Step 4 integration**: Optional classification filtering post-validation
+
+**Results:**
+- **✅ Animals detected (1):** IMG_0007 (woodpecker species identified)
+- **❌ No animals (19):** All others filtered by Step 4 classification
+- **Filter impact:** 90% reduction from previous 10 videos → 1 video
+
+**Issues:** DeepFaune URL broken (404), using fallback dummy classification
+
+## DeepFaune Model Loading Fix: 2025-07-14 (Log: wildcams_20250714_041733.log)
+
+**Changes:** Fixed DeepFaune model architecture mismatch
+1. **Correct model**: `deepfaune-vit_large_patch14_dinov2.lvd142m.v3.pt` from `Deepfaune_v1.3`
+2. **Proper structure**: Custom `Model` class with `base_model` attribute matching demo code
+3. **Fixed preprocessing**: CROP_SIZE=182, proper normalization
+
+**Results:**
+- **✅ Animals detected (2):** IMG_0007 (woodpecker, conf=0.746), IMG_0012 (conf=0.998)
+- **❌ No animals (18):** All others filtered
+- **Performance**: Precision 100%, Recall 40% (2/5 expected animals)
+
+## Ensemble Logic Fix + Raw Model Outputs: 2025-07-14 (Log: wildcams_20250714_205352.log)
+
+**Changes:** 
+1. **Fixed ensemble logic**: Replaced weighted averaging with "either model passes" strategy
+2. **Raw model outputs**: Exposed 34-species DeepFaune probabilities and BioCLIP top-5 predictions
+3. **Enhanced logging**: Added model approval tracking with `approved_by` field
+
+**Results:**
+- **✅ Animals detected (4):** IMG_0007, IMG_0009, IMG_0011, IMG_0012 (all approved by DeepFaune)
+- **❌ No animals (16):** All others filtered
+- **Performance**: Recall improved 40% → 80% (4/5 expected animals)
+
+**Key Findings:**
+- DeepFaune proved decisive in all successful cases
+- BioCLIP threshold (0.30) may be too high (most predictions 0.08-0.29)
+- Models give confident predictions on garbage crops (robustness issue)
+- Ensemble fix eliminated major false negative (IMG_0009 with 99.4% DeepFaune confidence)

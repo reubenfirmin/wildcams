@@ -31,8 +31,8 @@ from pathlib import Path
 
 # Import new configuration modules
 from config import ProcessingConfig, ConfigurationManager
-from constants import DEFAULT_ENSEMBLE_MODELS, MAIN_LOGGER_NAME
-from data import ProcessingStatus
+from core.constants import DEFAULT_ENSEMBLE_MODELS, MAIN_LOGGER_NAME
+from core.data_types import ProcessingStatus
 
 # Import new core classes
 from core import BatchVideoProcessor

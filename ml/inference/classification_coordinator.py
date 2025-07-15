@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List
 import numpy as np
 from pathlib import Path
 
-from data_types import ClassificationResult, BioCLIPResult, DeepFauneResult, InferenceResult
+from core.data_types import ClassificationResult, BioCLIPResult, DeepFauneResult, InferenceResult
 from config import ProcessingConfig
 from .bioclip_inference import BioCLIPInference
 from .deepfaune_inference import DeepFauneInference

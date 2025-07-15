@@ -4,8 +4,8 @@ import argparse
 from typing import Optional, List, Union
 from .processing_config import ProcessingConfig
 from argparse import Namespace
-from constants import DEFAULT_ENSEMBLE_MODELS, DEFAULT_VIDEO_DIR
-from data import ConfigurationUpdate
+from core.constants import DEFAULT_ENSEMBLE_MODELS, DEFAULT_VIDEO_DIR
+from core.data_types import ConfigurationUpdate
 
 
 class ConfigurationManager:

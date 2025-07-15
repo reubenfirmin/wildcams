@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Optional, Any
 
 from .background_subtractor import BackgroundSubtractorFactory
 from config import ProcessingConfig
-from constants import DEFAULT_MOTION_METHOD
+from core.constants import DEFAULT_MOTION_METHOD
 
 logger = logging.getLogger('wildcams')
 

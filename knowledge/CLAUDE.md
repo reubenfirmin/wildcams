@@ -42,7 +42,7 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 - **knowledge/theory.md** - Technical architecture, model details, validation algorithms
 - **knowledge/procedures.md** - Step-by-step procedures for common tasks
 - **knowledge/codestructure.md** - Code structure and organization
-- **experiments.md** - Experimental results and parameter tuning history
+- **knowledge/experiments.md** - Experimental results and parameter tuning history
 
 
 ## Critical Rules

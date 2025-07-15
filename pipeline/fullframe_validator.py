@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
-from data import CompositeScore
-from data import MotionTrack, ValidationSequence, Detection, BoundingBox, Track
+from core.data_types import CompositeScore
+from core.data_types import MotionTrack, ValidationSequence, Detection, BoundingBox, Track
 
 logger = logging.getLogger('wildcams')
 

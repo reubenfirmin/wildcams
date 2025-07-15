@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 from pathlib import Path
 
-from data_types import DeepFauneResult, InferenceResult
+from core.data_types import DeepFauneResult, InferenceResult
 from config import ProcessingConfig
 
 logger = logging.getLogger('wildcams')
