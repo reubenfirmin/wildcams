@@ -1,6 +1,6 @@
 """Processing configuration dataclass for wildlife video processing."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 
@@ -75,8 +75,18 @@ class ProcessingConfig:
     low_confidence_cutoff: float
     
     # Clustering parameters
+    enable_clustering: bool
     clustering_eps: float
     min_samples: int
     
     # Temporal continuity
     confidence_bridge_threshold: float
+    
+    # Step 4: Animal classification
+    enable_animal_classification: bool
+    animal_confidence_threshold: float
+    species_confidence_threshold: float
+    classification_models: List[str]
+    bioclip_top_k: int
+    bioclip_threshold: float
+    deepfaune_threshold: float

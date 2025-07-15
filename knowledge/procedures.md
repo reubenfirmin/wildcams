@@ -7,7 +7,7 @@
 1. **Identify log file**: Find most recent `wildcams_YYYYMMDD_HHMMSS.log`
 2. **Extract results**: Parse processing outcomes for each video
 3. **Compare to ground truth**: 
-   - Videos 7,8,9,11,12: Should detect animals
+   - Videos 7,8,9,10,11,12: Should detect animals
    - Videos 1-6: Should NOT detect animals
    - Videos 13-19: Should be filtered as camera handling
 4. **Document in experiments.md**: Use terse format with log filename

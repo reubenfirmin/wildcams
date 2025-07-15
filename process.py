@@ -11,8 +11,10 @@
 #   "torch>=2.0.0",
 #   "torchvision>=0.15.0",
 #   "transformers>=4.35.0",
+#   "open-clip-torch>=2.20.0",
 #   "pybioclip>=0.1.0",
-#   "pytorchwildlife>=1.0.0"
+#   "huggingface-hub>=0.19.0",
+#   "timm>=0.9.0"
 # ]
 # ///
 """
@@ -30,7 +32,7 @@ from pathlib import Path
 # Import new configuration modules
 from config import ProcessingConfig, ConfigurationManager
 from constants import DEFAULT_ENSEMBLE_MODELS, MAIN_LOGGER_NAME
-from data_types import ProcessingStatus
+from data import ProcessingStatus
 
 # Import new core classes
 from core import BatchVideoProcessor

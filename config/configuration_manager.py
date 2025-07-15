@@ -5,7 +5,7 @@ from typing import Optional, List, Union
 from .processing_config import ProcessingConfig
 from argparse import Namespace
 from constants import DEFAULT_ENSEMBLE_MODELS, DEFAULT_VIDEO_DIR
-from data_types import ConfigurationUpdate
+from data import ConfigurationUpdate
 
 
 class ConfigurationManager:
@@ -65,6 +65,8 @@ class ConfigurationManager:
                            help='Low confidence cutoff for camera handling detection (default: 0.2)')
         
         # Clustering parameters
+        parser.add_argument('--enable-clustering', action='store_true', default=False,
+                           help='Enable clustering analysis (default: False, disabled to avoid model reloading)')
         parser.add_argument('--clustering-eps', type=float, default=0.3,
                            help='DBSCAN eps parameter for clustering (default: 0.3)')
         parser.add_argument('--min-samples', type=int, default=2,
@@ -138,6 +140,24 @@ class ConfigurationManager:
         # Debug parameters
         parser.add_argument('--debug-show-spatially-invalid', action='store_true',
                            help='Show spatially invalid detections in logs (default: False)')
+        
+        # Step 4: Animal classification
+        parser.add_argument('--enable-animal-classification', action='store_true', default=True,
+                           help='Enable Step 4 animal classification (default: True)')
+        parser.add_argument('--skip-animal-classification', dest='enable_animal_classification', action='store_false',
+                           help='Skip Step 4 animal classification')
+        parser.add_argument('--animal-confidence-threshold', type=float, default=0.5,
+                           help='Minimum confidence for animal classification (default: 0.5)')
+        parser.add_argument('--species-confidence-threshold', type=float, default=0.3,
+                           help='Minimum confidence for species identification (default: 0.3)')
+        parser.add_argument('--classification-models', default='bioclip,deepfaune',
+                           help='Comma-separated list of classification models (default: bioclip,deepfaune)')
+        parser.add_argument('--bioclip-top-k', type=int, default=5,
+                           help='Number of top species predictions from BioCLIP (default: 5)')
+        parser.add_argument('--bioclip-threshold', type=float, default=0.30,
+                           help='BioCLIP animal detection threshold (default: 0.30)')
+        parser.add_argument('--deepfaune-threshold', type=float, default=0.62,
+                           help='DeepFaune animal detection threshold (default: 0.62)')
     
     
     def load_from_cli_args(self, args, include_motion: bool = True) -> None:
@@ -233,11 +253,21 @@ class ConfigurationManager:
             low_confidence_cutoff=args.low_confidence_cutoff,
             
             # Clustering parameters
+            enable_clustering=args.enable_clustering,
             clustering_eps=args.clustering_eps,
             min_samples=args.min_samples,
             
             # Temporal continuity
-            confidence_bridge_threshold=args.confidence_bridge_threshold
+            confidence_bridge_threshold=args.confidence_bridge_threshold,
+            
+            # Step 4: Animal classification
+            enable_animal_classification=args.enable_animal_classification,
+            animal_confidence_threshold=args.animal_confidence_threshold,
+            species_confidence_threshold=args.species_confidence_threshold,
+            classification_models=args.classification_models.split(',') if args.classification_models else [],
+            bioclip_top_k=args.bioclip_top_k,
+            bioclip_threshold=args.bioclip_threshold,
+            deepfaune_threshold=args.deepfaune_threshold
         )
     
     def get_processing_config(self) -> ProcessingConfig:

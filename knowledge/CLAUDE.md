@@ -51,3 +51,14 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 - **New experiments should change only one or two parameters**: Follow scientific process and do not change multiple parameters at once
 - **Document experiments**: Log all parameter changes in experiments.md
 - **Consult procedures.md**: Follow standard procedures for common tasks
+
+## Debugging Methodology
+- **NO GUESSING**: When you encounter missing files, URLs, or errors - search for exact names/messages first
+- **USE PROVIDED SOURCES**: Reference the actual code/repos provided by user, not improvised solutions
+- **ASK FOR SPECIFICS**: If you need information, ask user exactly what to look for instead of improvising
+- **SYSTEMATIC DEBUGGING**: Debug step-by-step using actual source code, not random trial-and-error fixes
+- **SEARCH BEFORE FIXING**: For missing files/models, search for the exact filename before trying alternatives
+- **NO LAZY SHORTCUTS**: Don't skip research steps or assume solutions - do the actual work to find correct answers
+- **EXHAUSTIVE INVESTIGATION**: Read the full source code, check all relevant files, search thoroughly before concluding
+- **FIX, DON'T DELETE**: When code is wrong, replace it with correct implementation - don't just remove functionality
+- **UNDERSTAND INTENT**: Before removing code, understand what it was trying to accomplish and preserve that functionality
