@@ -4,13 +4,14 @@ Handles all YOLO model variants (v8, v10, v12).
 """
 
 import logging
-from typing import List, Dict
+from typing import List
 import numpy as np
 
 logger = logging.getLogger('wildcams')
 
 # Import constants
 from ..constants import MODEL_DETECTION_THRESHOLD
+from core.data_types import Detection, BoundingBox
 
 class YOLOInferenceEngine:
     """Handles inference for YOLO model variants."""
@@ -24,8 +25,8 @@ class YOLOInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, config, 
-                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config,
+                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Detection]:
         """
         Run YOLO detection on a frame.
         
@@ -57,16 +58,15 @@ class YOLOInferenceEngine:
                 for box in result.boxes:
                     confidence = float(box.conf)
                     bbox = box.xyxy.tolist()[0]
-                    
-                    detection = {
-                        'confidence': confidence,
-                        'bbox': bbox,
-                        'source': model_name,
-                        'class': 'animal',  # YOLO models detect generic animals
-                        'timestamp': timestamp_seconds,
-                        'frame_idx': frame_idx
-                    }
-                    detections.append(detection)
+
+                    detections.append(Detection(
+                        confidence=confidence,
+                        bbox=BoundingBox(bbox[0], bbox[1], bbox[2], bbox[3]),
+                        source=model_name,
+                        class_name='animal',  # YOLO models detect generic animals
+                        timestamp=timestamp_seconds,
+                        frame_idx=frame_idx,
+                    ))
         
         return detections
     

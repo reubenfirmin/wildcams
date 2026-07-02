@@ -476,3 +476,203 @@ process -v 10 11 -e yolo12x,yolo12m,MDV6-yolov10-e,rtdetr-l --conf 0.4 --min-mot
 - BioCLIP threshold (0.30) may be too high (most predictions 0.08-0.29)
 - Models give confident predictions on garbage crops (robustness issue)
 - Ensemble fix eliminated major false negative (IMG_0009 with 99.4% DeepFaune confidence)
+## Repo Recovery + Guardrails + Analytics Cleanup: 2026-07-01 (no processing run)
+
+**Context:** The `oss/wildcams` checkout was non-importable. The `90ec2b1` refactor
+deleted the old flat layout but three `core/` support modules (`constants.py`,
+`data_types.py`, `functional_utils.py`), imported across ~15 files, were never
+committed and were absent, so `./process.py` failed at import. Recovered from the
+original working copy at `/expanse/code/proj/wildcams` (same commit, files untracked).
+
+**Changes (all left uncommitted for review; no detection-behavior change):**
+1. **Recovery**: restored the 3 missing `core/` modules; ported uncommitted proj fixes:
+   DeepFaune `torch.load(weights_only=False)` (torch 2.6 fix), motion bg-subtractor
+   leak fix + `gc.collect()`, per-video/per-step timing logs, sd_watcher udisks mount
+   retry/backoff, and the uv-only env rework (`.envrc` drops Nix + watcher auto-start;
+   new `watch.sh`/`stop-watcher.sh`/`process-videos.sh`). Deleted `flake.nix`/`flake.lock`.
+2. **Guardrails**: added `tests/` (import smoke test = module-graph guardrail; config +
+   functional-utils unit tests), `.github/workflows/ci.yml`, and fixed `pyproject.toml`
+   to declare the real ML deps (was "SD card downloader" with only python-dotenv).
+3. **Docs**: reconciled theory.md/procedures.md/codestructure.md/CLAUDE.md (3-step→4-step,
+   `--composite-motion-threshold` default 8.0→0.5, stale flag names, deleted-file refs).
+4. **Analytics (safe, no behavior change)**: fixed a list-aliasing bug in
+   `session_manager.record_video_success` (Step-4 contributions were mutating the stored
+   Step-3 record); replaced a hardcoded analysis path and two hardcoded "0.5" threshold
+   log strings with config values; replaced O(n²) `next(...)` scans with dict lookups;
+   removed a dead variable in `classification_coordinator`; added div-by-zero guards to
+   `postprocessing` coordinate transforms and dropped a redundant `.copy()`.
+
+**Model currency (research, see models.md):** DeepFaune is Europe-only and a poor fit
+for Costa Rica; SpeciesNet + `CRI` geofencing is the top recommended addition; BioCLIP 2
+is a near-free `pybioclip` bump; YOLO12 is superseded by YOLO26; MegaDetector v6 is
+current. None applied yet — each is a behavior-changing experiment for the user to run.
+
+**Deferred behavior-changing items (need ground-truth re-validation):**
+- `fullframe_validator.py`: `frames_passed` counts detections, not distinct frames, so a
+  track in one frame can satisfy `min_track_frames` via multiple models.
+- `fullframe_validator.py`: `temporal_continuity_passed = True` is stubbed (no-op) yet
+  ANDed into `validation_passed` and logged as if real.
+- Composite-score constants (temporal/consensus/motion multipliers, duration bonus, fps
+  fallback 30.0, consensus boost 0.1) are hardcoded and should become CLI-tunable.
+- BioCLIP threshold 0.30 likely too high (most predictions 0.08-0.29) — prior finding.
+
+## Config-Gated Scoring Fixes: 2026-07-02 (no processing run; needs ground-truth re-validation)
+
+Implemented the deferred behavior-changing analytics items, each config-gated so
+defaults preserve current behavior (82 unit tests pass; detection quality still needs a
+ground-truth video run to confirm).
+
+1. **frames_passed bug fixed** (`fullframe_validator.py`): now counts distinct passed
+   frames, not synthetic detections (one per model per frame). Identical to the old
+   behavior at the default `--min-track-frames 1`; only differs when the threshold is raised.
+2. **Temporal continuity implemented** behind `--enable-temporal-continuity-check`
+   (default OFF = prior always-pass). When on, the largest gap between a track's passed
+   frames must be ≤ `--temporal-continuity-max-gap-seconds` (default 1.0).
+3. **Composite-score constants promoted to CLI** (defaults = old hardcoded values):
+   `--default-fps` (30.0), `--consensus-boost-per-detection` (0.1),
+   `--composite-temporal-multiplier-cap` (2.0), `--composite-consensus-boost-per-model` (0.2),
+   `--composite-motion-multiplier-base` (0.5), `--composite-motion-multiplier-span` (1.5),
+   `--composite-duration-bonus-base` (0.8), `--composite-duration-bonus-cap` (1.5),
+   `--composite-duration-bonus-divisor` (6.0).
+
+**Suggested first experiments once a golden set is available:** raise
+`--min-track-frames` to 2-3 (now that frame counting is correct) and try
+`--enable-temporal-continuity-check` to cut false positives from erratic single-frame hits.
+
+## Golden-set / model audit: BLOCKED (2026-07-02)
+
+The documented golden standard set (IMG_0001-0020, labels in knowledge/CLAUDE.md and this
+file) is **no longer on disk**. `VIDEO_DIR` (/home/rfirmin/Videos/wildcams) now holds 34
+`DSCF*.MP4` files (Nov 2025, unlabeled) plus a `may 2025/` archive of 26 species-prefixed
+files (ag/an/co/pa/pe = likely agouti/anteater?/coati/paca/peccary), which is undocumented
+in the knowledge base. No label CSV/readme exists for either set.
+
+The requested model-currency audit (DeepFaune vs BioCLIP 2 vs SpeciesNet+CRI, see
+models.md) cannot run against the golden set until the videos are located or a new labeled
+set with documented ground truth is chosen. Pending user decision.
+
+## Model audit setup + puma1 smoke: 2026-07-02
+
+**Golden set replaced:** the IMG_0001-0020 set is gone from disk. Assembled a new audit set
+of 28 species-labeled videos from the user's naming convention: puma×2 (top dir) plus
+may-2025 ag×5 (agouti), an×1 (anteater), co×14 (coati), pa×4 (paca), pe×2 (peccary). Used
+as detection-level true positives (each contains the named animal); user will supply
+false-positive/miss cases later.
+
+**puma1 single-video smoke (current default config):**
+- Pipeline runs end-to-end on real footage (validates the recovery). ~3m38s/video on CPU,
+  ~4.2 GB peak RAM (first run included model downloads).
+- **puma1 = FALSE NEGATIVE**, skipped `filtered_by_animal_classification`, but Step 4 received
+  **0 input sequences** — it actually failed at **Step 3**: all detections logged
+  `conf:0.000 | ovlp:0.000 | threshold_failed`, motion pinned to the frame bottom edge
+  (y≈1100-1296 of a 1296-tall frame). The classifiers never saw a crop.
+- **Implication:** for videos that fail Step 3, swapping the Step-4 classifier can't help.
+  The classifier audit only has signal on videos that reach Step 4 with a crop. Running the
+  full 28-video baseline to measure detection recall per species and count how many reach Step 4.
+
+**Also found:** the "BioCLIP" engine is actually OpenAI CLIP, not BioCLIP (see models.md).
+
+## Baseline audit results (28 species videos, current config): 2026-07-02
+
+Ran the current default pipeline over the 28 species-labeled videos (47 min; puma1 reused
+its prior .processed result). Detection recall on known positives:
+
+| Species | Detected / Total | Recall |
+|---------|------------------|--------|
+| agouti (ag) | 3/5 | 60% |
+| anteater (an) | 1/1 | 100% |
+| coati (co) | 4/14 | 29% |
+| paca (pa) | 4/4 | 100% |
+| peccary (pe) | 0/2 | 0% |
+| puma | 1/2 | 50% |
+| **Total** | **13/28** | **46%** |
+
+**Where the 15 failures occur (the decisive finding):**
+- **14 failed at Step 3** — 0 crops reached the classifier (0 input to Step 4).
+- **1 failed at Step 4** — co12 produced 1 crop that the classifier rejected.
+
+So the Step-4 classifier is responsible for ~7% of misses; **detection + spatial-overlap
+validation (Step 3) causes ~93%.** Conclusion: swapping in BioCLIP 2 or SpeciesNet cannot
+materially improve recall on this footage — the classifier almost never runs. **The
+highest-impact work is Step 3, not the classifier roadmap.**
+
+**Step 3 mechanism (from co1, a 3840×2160 clip):** Step 2 passed; yolo12x/yolo12m produced
+2-11 detections per track, but every one logged `conf:0.000 | ovlp:0.000` and failed as
+`no_overlap` or `threshold_failed`. Detections exist yet report zero confidence and zero
+overlap with motion regions. Next step is a focused Step-3 debug: is confidence being
+dropped between detection and the validator, or are motion regions landing away from the
+animal (large 4K frames, motion tracks scattered) so overlap legitimately fails? This is a
+systematic-debugging task, separate from the (now deprioritized) classifier work.
+
+## Recall tuning: 46% -> 71% via three stacked gates: 2026-07-02
+
+Root-caused the Step-3 recall loss (see prior entry): the pipeline stacks several gates in
+series, each calibrated too high for this low-confidence 4K jungle footage. On these clips
+detectors emit ~0.02-0.06 confidence per detection; real animals are detected weakly but
+consistently across frames.
+
+**The three binding gates (in order the crop hits them):**
+1. **Step-3 per-frame gate** — `_process_frame` reused `--confidence-threshold` (0.8) as a
+   per-frame pass bar, so a track validated only if a single frame's summed confidence hit
+   0.8. Fixed by the new `--frame-pass-confidence-threshold` (defaults to confidence_threshold;
+   set very low to make it a coverage check and let the per-track total be the confidence arbiter).
+2. **BioCLIP threshold** (0.30) — CLIP scored a coati 0.14-0.29.
+3. **Ensemble animal-confidence threshold** (0.5) — rejected the low ensemble confidence.
+
+**Recipe that recovered co1 and lifted the set:**
+`--frame-pass-confidence-threshold 0.001 --bioclip-threshold 0.1 --animal-confidence-threshold 0.1`
+
+**Result over the 28 species videos:**
+
+| Species | Baseline | Tuned |
+|---------|----------|-------|
+| agouti | 3/5 | 4/5 |
+| anteater | 1/1 | 1/1 |
+| coati | 4/14 | 8/14 |
+| paca | 4/4 | 4/4 |
+| peccary | 0/2 | 1/2 |
+| puma | 1/2 | 2/2 |
+| **Total** | **13/28 (46%)** | **20/28 (71%)** |
+
+**Remaining 8 failures all still fail at Step 3 with conf_pass=False** — the detector barely
+sees the animal (e.g. co3: one 19.7s track, 1 detection at conf 0.012, motion_align 0.602).
+Catching these needs `--confidence-threshold` ~0.01, which would pass almost anything. That
+is a detection-quality ceiling, not a threshold to push blind.
+
+**Caveats / next levers:**
+- PRECISION IS UNMEASURED. The old false-positive golden set (videos 1-6) is gone; these 28
+  are all true positives. Lowering three gates trivially raises recall; the user's forthcoming
+  negatives are needed to set the precision/recall balance before changing any DEFAULT.
+- Defaults were NOT changed (behavior-preserving). The recipe is a CLI override to validate.
+- The real fix for the remaining detection-quality ceiling is likely **crop-based detection**:
+  run detectors on motion-region crops (zoomed in) instead of full 4K frames, so small animals
+  are larger and score higher confidence. This is the architectural lever (README notes crop
+  analysis was previously "eliminated" in favor of full-frame; that trade-off hurts 4K recall).
+
+## Typed detection migration + data-model tightening: 2026-07-02
+
+Executed the plan at docs/superpowers/plans/2026-07-02-typed-detection-migration.md (10 tasks,
+tests-first). Finished the abandoned dict->dataclass migration and shrank the data model.
+
+**Data model: 37 -> 30 dataclasses.** Removed: EnsembleResult, ProcessingError, the 3
+single-field step `*Data` wrappers, BioCLIPResult + DeepFauneResult (folded into InferenceResult
+with an optional `all_predictions`), and the clustering trio (FeatureVector/ClusterResult/
+ClusteringAnalysis). Added: `StepResult` base (kw_only) for the shared step-result fields, and
+`ScoredDetection` (a Detection plus the per-frame boosted_confidence/motion_overlap/overlap_type
+the validator used to bolt onto a dict).
+
+**Detection hot path now typed.** The inference engines (yolo/rtdetr/megadetector) return
+`List[Detection]` with `bbox` a `BoundingBox`; postprocessing/ensemble/fullframe_validator use
+attribute access; `_calculate_composite_score` returns a widened `CompositeScore` dataclass
+instead of a dict. Geometry helpers (`calculate_iou`, coordinate transforms) still take raw
+`[x1,y1,x2,y2]` lists (lowest churn; motion-track bboxes are lists).
+
+**Clustering cut** (see models.md): the ResNet18+DBSCAN feature-extraction/clustering chain was
+removed end-to-end (feature_extractor.py, the model_manager ResNet load, ensemble_wrapper
+feature methods, wildlife_processor.extract_features_from_detection, config flags).
+
+**Verification.** Characterization tests pin the composite-score math, IoU, NMS, area/confidence
+filtering, and coordinate transforms; all 95 tests pass with identical asserted numbers.
+End-to-end proof: re-running co1 (tuned thresholds) post-migration produced byte-identical Step-3
+scores (track_1 ensemble=1.491/composite=2.155; track_6 ensemble=1.430/composite=2.061) and the
+same VIDEO SUCCESS outcome as pre-migration. Behavior-neutral, confirmed.

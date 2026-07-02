@@ -16,6 +16,17 @@
 #   "huggingface-hub>=0.19.0",
 #   "timm>=0.9.0"
 # ]
+#
+# # This project is CPU-only ("CPU feasible"). Pin torch/torchvision to the CPU wheel
+# # index so `./process.py` doesn't pull the multi-GB CUDA build. Mirrors pyproject.toml.
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
+#
+# [tool.uv.sources]
+# torch = { index = "pytorch-cpu" }
+# torchvision = { index = "pytorch-cpu" }
 # ///
 """
 Next Generation Wildlife Video Processor.

@@ -11,7 +11,7 @@ from config import ProcessingConfig
 from pipeline.fullframe_validator import FullFrameValidator
 from pipeline.step_interface_v2 import FullFrameValidationStep
 from core.data_types import (
-    FullFrameValidationResult, FullFrameValidationData, FullFrameValidationMetadata,
+    FullFrameValidationResult, FullFrameValidationMetadata,
     MotionDetectionResult, CameraHandlingResult, StepTiming,
     ValidationSequence, Track, Detection, BoundingBox, ModelContribution,
     create_empty_validation_result
@@ -37,7 +37,7 @@ class FullFrameValidationStepImpl(FullFrameValidationStep):
         if camera_result.early_exit:
             return create_empty_validation_result('no_tracks_after_filtering')
         
-        motion_tracks = camera_result.data.motion_tracks
+        motion_tracks = camera_result.motion_tracks
         
         if not motion_tracks:
             return create_empty_validation_result('no_motion_tracks')
@@ -58,7 +58,7 @@ class FullFrameValidationStepImpl(FullFrameValidationStep):
         # Create typed result
         return FullFrameValidationResult(
             success=True,
-            data=FullFrameValidationData(validated_sequences=validated_sequences),
+            validated_sequences=validated_sequences,
             metadata=FullFrameValidationMetadata(
                 step_name='fullframe_validation',
                 timing=StepTiming(start_time, end_time, end_time - start_time),

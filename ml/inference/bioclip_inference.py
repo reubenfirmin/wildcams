@@ -6,7 +6,7 @@ from typing import List, Tuple, Optional
 import numpy as np
 from pathlib import Path
 
-from core.data_types import BioCLIPResult, InferenceResult
+from core.data_types import InferenceResult
 from config import ProcessingConfig
 
 logger = logging.getLogger('wildcams')
@@ -101,20 +101,9 @@ class BioCLIPInference:
         Returns:
             InferenceResult with generic interface
         """
-        bioclip_result = self.classify_detailed(image_crop)
-        
-        # Convert to generic interface
-        return InferenceResult(
-            model_name="BioCLIP",
-            is_animal=bioclip_result.is_animal,
-            animal_confidence=bioclip_result.top_confidence,  # Always report actual confidence
-            species=bioclip_result.top_species if bioclip_result.is_animal else None,
-            species_confidence=bioclip_result.top_confidence if bioclip_result.is_animal else 0.0,
-            can_identify_species=True,
-            processing_time=bioclip_result.processing_time
-        )
-    
-    def classify_detailed(self, image_crop: np.ndarray) -> BioCLIPResult:
+        return self._classify(image_crop)
+
+    def _classify(self, image_crop: np.ndarray) -> InferenceResult:
         """
         Classify an image crop using BioCLIP.
         
@@ -187,13 +176,16 @@ class BioCLIPInference:
             
             # Convert predictions list to dictionary for all_predictions field
             all_predictions = {pred[0]: pred[1] for pred in predictions}
-            
-            return BioCLIPResult(
+
+            return InferenceResult(
+                model_name="BioCLIP",
                 is_animal=is_animal,
-                top_species=top_species,
-                top_confidence=top_confidence,
+                animal_confidence=top_confidence,
+                species=top_species if is_animal else None,
+                species_confidence=top_confidence if is_animal else 0.0,
+                can_identify_species=True,
+                processing_time=processing_time,
                 all_predictions=all_predictions,
-                processing_time=processing_time
             )
             
         except Exception as e:

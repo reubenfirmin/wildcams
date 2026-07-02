@@ -4,13 +4,14 @@ Handles RT-DETR model variants (full-frame only).
 """
 
 import logging
-from typing import List, Dict
+from typing import List
 import numpy as np
 
 logger = logging.getLogger('wildcams')
 
 # Import constants
 from ..constants import MODEL_DETECTION_THRESHOLD
+from core.data_types import Detection, BoundingBox
 
 class RTDETRInferenceEngine:
     """Handles inference for RT-DETR model variants."""
@@ -24,8 +25,8 @@ class RTDETRInferenceEngine:
         """
         self.model_manager = model_manager
     
-    def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None, 
-                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Dict]:
+    def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None,
+                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Detection]:
         """
         Run RT-DETR detection on a frame.
         
@@ -62,16 +63,15 @@ class RTDETRInferenceEngine:
                 for box in result.boxes:
                     confidence = float(box.conf)
                     bbox = box.xyxy.tolist()[0]
-                    
-                    detection = {
-                        'confidence': confidence,
-                        'bbox': bbox,
-                        'source': f'rtdetr_{model_name}',
-                        'class': 'animal',  # RT-DETR models detect generic animals
-                        'timestamp': timestamp_seconds,
-                        'frame_idx': frame_idx
-                    }
-                    detections.append(detection)
+
+                    detections.append(Detection(
+                        confidence=confidence,
+                        bbox=BoundingBox(bbox[0], bbox[1], bbox[2], bbox[3]),
+                        source=f'rtdetr_{model_name}',
+                        class_name='animal',  # RT-DETR models detect generic animals
+                        timestamp=timestamp_seconds,
+                        frame_idx=frame_idx,
+                    ))
         
         return detections
     

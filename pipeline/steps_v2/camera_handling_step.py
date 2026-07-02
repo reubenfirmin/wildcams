@@ -11,7 +11,7 @@ from config import ProcessingConfig
 from pipeline.camera_handling_filter import CameraHandlingFilter
 from pipeline.step_interface_v2 import CameraHandlingStep
 from core.data_types import (
-    CameraHandlingResult, CameraHandlingData, CameraHandlingMetadata,
+    CameraHandlingResult, CameraHandlingMetadata,
     MotionDetectionResult, StepTiming, MotionTrack,
     create_empty_camera_result
 )
@@ -35,7 +35,7 @@ class CameraHandlingStepImpl(CameraHandlingStep):
         if motion_result.early_exit:
             return create_empty_camera_result('no_motion_tracks')
         
-        input_tracks = motion_result.data.motion_tracks
+        input_tracks = motion_result.motion_tracks
         
         # Apply camera handling filter with typed objects
         filtered_tracks_data = self.camera_filter.filter_motion_tracks_for_camera_handling(
@@ -56,7 +56,7 @@ class CameraHandlingStepImpl(CameraHandlingStep):
         # Create typed result
         return CameraHandlingResult(
             success=True,
-            data=CameraHandlingData(motion_tracks=filtered_tracks),
+            motion_tracks=filtered_tracks,
             metadata=CameraHandlingMetadata(
                 step_name='camera_handling',
                 timing=StepTiming(start_time, end_time, end_time - start_time),

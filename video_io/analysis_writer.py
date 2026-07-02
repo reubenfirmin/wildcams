@@ -1,7 +1,6 @@
 """Analysis result writing operations for wildlife video processing."""
 
 import json
-import pickle
 import logging
 import numpy as np
 from pathlib import Path
@@ -38,29 +37,6 @@ class AnalysisWriter:
             
         except Exception as e:
             logger.error(f"❌ Failed to save analysis for {video_path.name}: {e}")
-    
-    def save_clustering_results(self, clusters: List[Dict], features: List[np.ndarray], 
-                               video_metadata: List[Dict]) -> None:
-        """Save clustering results and features."""
-        try:
-            # Save clusters to JSON
-            clusters_path = self.output_dir / 'clusters.json'
-            with open(clusters_path, 'w') as f:
-                json.dump(self._convert_for_json(clusters), f, indent=2)
-            
-            # Save features and metadata to pickle for later use
-            features_path = self.output_dir / 'features.pkl'
-            with open(features_path, 'wb') as f:
-                pickle.dump({
-                    'features': features,
-                    'metadata': video_metadata
-                }, f)
-            
-            logger.info(f"🗂️ Clustering results saved to: {clusters_path}")
-            logger.info(f"📊 Features saved to: {features_path}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save clustering results: {e}")
     
     def generate_summary_report(self, all_results: List[Dict]) -> None:
         """Generate and save comprehensive summary report."""

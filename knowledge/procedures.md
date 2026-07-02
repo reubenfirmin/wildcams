@@ -31,13 +31,13 @@
 **Task**: Implement new functionality or parameters
 
 **Process**:
-1. **Add CLI parameter**: Update `video_processor_base.py` argument parsing
-2. **Add to config class**: Update `ProcessingConfig` in `process.py`
+1. **Add CLI parameter**: Update argument parsing in `config/configuration_manager.py` (setup_common_arguments / setup_motion_detection_arguments), and wire it in `_create_config_from_args`
+2. **Add to config class**: Add the field to `ProcessingConfig` in `config/processing_config.py`
 3. **Implement logic**: Add feature code with NO hardcoded constants
 4. **Test with 1-2 videos**: Verify functionality works
 5. **Document in CLAUDE.md** if significant
 
-**Required Files**: `video_processor_base.py`, `process.py`, test videos
+**Required Files**: `config/configuration_manager.py`, `config/processing_config.py`, test videos
 
 ## Tune Parameters
 **Task**: Optimize detection thresholds and settings
@@ -51,8 +51,20 @@
 
 **Required Files**: Current config, test videos, experiments.md
 
+## Run Automated Tests
+**Task**: Verify the module graph imports and pure logic still works (fast, no model downloads at import)
+
+**Process**:
+1. **Run the suite**: `uv run pytest -q`
+2. **Import smoke test**: `tests/test_imports.py` walks every first-party package; this is the guardrail that catches a broken refactor (e.g. missing `core/` modules) before it lands
+3. **Unit tests**: `tests/test_functional_utils.py` and `tests/test_config.py` cover video selection and CLI-argument parsing / defaults
+4. **CI**: the same suite runs on push/PR via `.github/workflows/ci.yml`
+
+Note: these tests do NOT replace the manual ground-truth video runs, which remain the source of truth for detection quality.
+
 ## Critical Rules
 - **NO hardcoded constants**: All values must be CLI parameters
 - **Test before commit**: Always test changes with videos 7,18 minimum  
 - **Document experiments**: Use terse format in experiments.md
 - **Check ground truth**: Know what each test video should contain
+- **Run `uv run pytest`**: Before committing structural/refactor changes, confirm the import + unit tests pass

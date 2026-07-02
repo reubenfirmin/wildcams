@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 from pathlib import Path
 
-from core.data_types import DeepFauneResult, InferenceResult
+from core.data_types import InferenceResult
 from config import ProcessingConfig
 
 logger = logging.getLogger('wildcams')
@@ -84,7 +84,7 @@ class DeepFauneInference:
                     return x
 
                 def loadWeights(self, path):
-                    params = torch.load(path, map_location=self.device)
+                    params = torch.load(path, map_location=self.device, weights_only=False)
                     args = params['args']
                     if self.nbclasses != args['num_classes']:
                         raise Exception("You load a model ({}) that does not have the same number of class"
@@ -131,20 +131,9 @@ class DeepFauneInference:
         Returns:
             InferenceResult with generic interface
         """
-        deepfaune_result = self.classify_detailed(image_crop)
-        
-        # Convert to generic interface  
-        return InferenceResult(
-            model_name="DeepFaune",
-            is_animal=deepfaune_result.is_animal,
-            animal_confidence=deepfaune_result.animal_confidence,
-            species=None,  # DeepFaune doesn't do species identification
-            species_confidence=0.0,
-            can_identify_species=False,
-            processing_time=deepfaune_result.processing_time
-        )
-    
-    def classify_detailed(self, image_crop: np.ndarray) -> DeepFauneResult:
+        return self._classify(image_crop)
+
+    def _classify(self, image_crop: np.ndarray) -> InferenceResult:
         """
         Classify an image crop using DeepFaune.
         
@@ -217,11 +206,14 @@ class DeepFauneInference:
             
             logger.info(f"🦌 DeepFaune: animal={is_animal} (conf={animal_confidence:.3f})")
             
-            return DeepFauneResult(
+            return InferenceResult(
+                model_name="DeepFaune",
                 is_animal=is_animal,
                 animal_confidence=animal_confidence,
-                non_animal_confidence=non_animal_confidence,
-                processing_time=processing_time
+                species=None,  # DeepFaune doesn't do species identification
+                species_confidence=0.0,
+                can_identify_species=False,
+                processing_time=processing_time,
             )
             
         except Exception as e:

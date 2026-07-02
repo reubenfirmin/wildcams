@@ -65,12 +65,6 @@ class ConfigurationManager:
                            help='Low confidence cutoff for camera handling detection (default: 0.2)')
         
         # Clustering parameters
-        parser.add_argument('--enable-clustering', action='store_true', default=False,
-                           help='Enable clustering analysis (default: False, disabled to avoid model reloading)')
-        parser.add_argument('--clustering-eps', type=float, default=0.3,
-                           help='DBSCAN eps parameter for clustering (default: 0.3)')
-        parser.add_argument('--min-samples', type=int, default=2,
-                           help='DBSCAN min_samples parameter for clustering (default: 2)')
         
         # Temporal continuity
         parser.add_argument('--confidence-bridge-threshold', type=float, default=0.6,
@@ -158,8 +152,38 @@ class ConfigurationManager:
                            help='BioCLIP animal detection threshold (default: 0.30)')
         parser.add_argument('--deepfaune-threshold', type=float, default=0.62,
                            help='DeepFaune animal detection threshold (default: 0.62)')
-    
-    
+
+        # Step 3 composite-score tuning (defaults preserve prior hardcoded values)
+        parser.add_argument('--default-fps', type=float, default=30.0,
+                           help='Fallback FPS when a video reports none (default: 30.0)')
+        parser.add_argument('--consensus-boost-per-detection', type=float, default=0.1,
+                           help='Per-extra-detection confidence boost within a model, per frame (default: 0.1)')
+        parser.add_argument('--composite-temporal-multiplier-cap', type=float, default=2.0,
+                           help='Cap on the temporal-density multiplier in the composite score (default: 2.0)')
+        parser.add_argument('--composite-consensus-boost-per-model', type=float, default=0.2,
+                           help='Composite-score boost per additional contributing model (default: 0.2)')
+        parser.add_argument('--composite-motion-multiplier-base', type=float, default=0.5,
+                           help='Base of the motion-alignment multiplier in the composite score (default: 0.5)')
+        parser.add_argument('--composite-motion-multiplier-span', type=float, default=1.5,
+                           help='Span of the motion-alignment multiplier in the composite score (default: 1.5)')
+        parser.add_argument('--composite-duration-bonus-base', type=float, default=0.8,
+                           help='Base of the track-duration bonus in the composite score (default: 0.8)')
+        parser.add_argument('--composite-duration-bonus-cap', type=float, default=1.5,
+                           help='Cap on the track-duration bonus in the composite score (default: 1.5)')
+        parser.add_argument('--composite-duration-bonus-divisor', type=float, default=6.0,
+                           help='Seconds divisor controlling how fast the duration bonus grows (default: 6.0)')
+
+        # Step 3 temporal continuity check (opt-in)
+        parser.add_argument('--enable-temporal-continuity-check', action='store_true', default=False,
+                           help='Require passed frames within a track to be temporally continuous (default: off)')
+        parser.add_argument('--temporal-continuity-max-gap-seconds', type=float, default=1.0,
+                           help='Max gap between consecutive passed frames when the continuity check is on (default: 1.0)')
+        parser.add_argument('--frame-pass-confidence-threshold', type=float, default=None,
+                           help='Per-frame pass gate: a single frame passes for a track when its summed detection '
+                                'confidence clears this. Defaults to --confidence-threshold (prior behavior); lower it '
+                                'to admit tracks whose confidence is spread across frames (see experiments.md).')
+
+
     def load_from_cli_args(self, args, include_motion: bool = True) -> None:
         """Load configuration directly from command line arguments."""
         if isinstance(args, list):
@@ -253,9 +277,6 @@ class ConfigurationManager:
             low_confidence_cutoff=args.low_confidence_cutoff,
             
             # Clustering parameters
-            enable_clustering=args.enable_clustering,
-            clustering_eps=args.clustering_eps,
-            min_samples=args.min_samples,
             
             # Temporal continuity
             confidence_bridge_threshold=args.confidence_bridge_threshold,
@@ -267,7 +288,29 @@ class ConfigurationManager:
             classification_models=args.classification_models.split(',') if args.classification_models else [],
             bioclip_top_k=args.bioclip_top_k,
             bioclip_threshold=args.bioclip_threshold,
-            deepfaune_threshold=args.deepfaune_threshold
+            deepfaune_threshold=args.deepfaune_threshold,
+
+            # Step 3 composite-score tuning
+            default_fps=args.default_fps,
+            consensus_boost_per_detection=args.consensus_boost_per_detection,
+            composite_temporal_multiplier_cap=args.composite_temporal_multiplier_cap,
+            composite_consensus_boost_per_model=args.composite_consensus_boost_per_model,
+            composite_motion_multiplier_base=args.composite_motion_multiplier_base,
+            composite_motion_multiplier_span=args.composite_motion_multiplier_span,
+            composite_duration_bonus_base=args.composite_duration_bonus_base,
+            composite_duration_bonus_cap=args.composite_duration_bonus_cap,
+            composite_duration_bonus_divisor=args.composite_duration_bonus_divisor,
+
+            # Step 3 temporal continuity check
+            enable_temporal_continuity_check=args.enable_temporal_continuity_check,
+            temporal_continuity_max_gap_seconds=args.temporal_continuity_max_gap_seconds,
+
+            # Per-frame pass gate; None -> fall back to confidence_threshold (prior behavior)
+            frame_pass_confidence_threshold=(
+                args.frame_pass_confidence_threshold
+                if args.frame_pass_confidence_threshold is not None
+                else args.confidence_threshold
+            )
         )
     
     def get_processing_config(self) -> ProcessingConfig:

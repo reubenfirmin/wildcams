@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 
 from .model_manager import ModelManager
-from .feature_extractor import FeatureExtractor
 from .inference.ensemble_coordinator import EnsembleCoordinator
 
 logger = logging.getLogger('wildcams')
@@ -37,12 +36,7 @@ class MLDetectionEnsemble:
         # Initialize components
         self.model_manager = ModelManager(self.ensemble_models, self.cache_dir)
         self.ensemble_coordinator = EnsembleCoordinator(self.model_manager)
-        
-        # Initialize feature extractor
-        self.feature_extractor_component = None
-        if self.model_manager.feature_extractor is not None:
-            self.feature_extractor_component = FeatureExtractor(self.model_manager.feature_extractor)
-        
+
         # Use global confidence threshold only
         self.confidence_threshold = confidence_threshold
         
@@ -91,12 +85,6 @@ class MLDetectionEnsemble:
         """Run multiscale analysis - backward compatibility."""
         return self.ensemble_coordinator.run_multiscale_analysis(frame, timestamp_seconds)
     
-    def extract_features(self, frame: np.ndarray, bbox: List[float]) -> Optional[np.ndarray]:
-        """Extract features - backward compatibility."""
-        if self.feature_extractor_component is None:
-            return None
-        return self.feature_extractor_component.extract_features(frame, bbox)
-    
     def _check_extended_class_correlations(self, detections: List[Dict], timestamp: float) -> None:
         """Check extended class correlations - backward compatibility."""
         self.ensemble_coordinator.check_extended_class_correlations(detections, timestamp)
@@ -121,8 +109,3 @@ class MLDetectionEnsemble:
     def megadetector_variants(self) -> Dict[str, Any]:
         """Access to MegaDetector variants - backward compatibility."""
         return self.model_manager.megadetector_variants
-    
-    @property
-    def feature_extractor(self) -> Optional[Any]:
-        """Access to feature extractor - backward compatibility."""
-        return self.model_manager.feature_extractor

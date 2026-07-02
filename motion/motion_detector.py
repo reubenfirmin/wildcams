@@ -29,11 +29,18 @@ class MotionDetector:
     
     def _init_motion_detector(self, config: ProcessingConfig):
         """Initialize motion detection algorithm."""
+        import gc
         method = config.motion_method
-        
+
+        # Release old subtractor if it exists to prevent resource leaks
+        if self.bg_subtractor is not None:
+            logger.debug(f"🧹 Releasing old background subtractor")
+            del self.bg_subtractor
+            gc.collect()  # Force garbage collection to free GPU/memory resources
+
         # Create main background subtractor
         self.bg_subtractor = BackgroundSubtractorFactory.create_subtractor(method, config)
-        
+
         logger.info(f"🔍 Motion method: {method}")
         logger.info(f"🎯 Motion area range: {config.min_motion_area}-{config.max_motion_area} pixels")
         logger.info(f"📐 Region size: min {config.min_region_width}x{config.min_region_height}")

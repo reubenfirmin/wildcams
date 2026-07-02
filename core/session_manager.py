@@ -94,9 +94,11 @@ class ProcessingSessionManager:
         self.all_analyses.append(analysis)
         self.session_data.processing_times.append((video_path.name, processing_time))
         
-        # Extract model contributions from fullframe validation metadata
-        model_contributions = analysis.fullframe_result.metadata.model_contributions or []
-        
+        # Extract model contributions from fullframe validation metadata.
+        # Copy the list: extending it below would otherwise mutate the list stored
+        # on the analysis metadata, injecting Step-4 contributions into the Step-3 record.
+        model_contributions = list(analysis.fullframe_result.metadata.model_contributions or [])
+
         # Add Step 4 classification model contributions if available
         if analysis.classification_result and analysis.classification_result.classification_enabled:
             step4_contributions = self._create_step4_model_contributions(analysis.classification_result)
@@ -221,7 +223,7 @@ class ProcessingSessionManager:
         # Generate model contribution analysis
         self._generate_model_contribution_analysis()
         
-        logger.info("📁 Analysis files saved to: /home/rfirmin/Videos/wildcams/analysis/")
+        logger.info(f"📁 Analysis files saved to: {Path(self.config.video_dir) / 'analysis'}")
         
         if self.all_analyses:
             logger.info(f"✅ Successfully processed {len(self.all_analyses)} videos with temporal consistency")
@@ -245,14 +247,14 @@ class ProcessingSessionManager:
             return
             
         logger.info("🦌 VIDEOS WITH ANIMALS DETECTED:")
+        processing_times = dict(self.session_data.processing_times)
         for analysis in self.all_analyses:
             video_name = analysis.video_path.name
             confidence = analysis.validation_result.confidence
             ensemble_score = analysis.validation_result.ensemble_score
             composite_score = analysis.validation_result.composite_score
             validated_sequences = analysis.validation_result.validated_sequences_count
-            # Find processing time from list of tuples
-            processing_time = next((time for name, time in self.session_data.processing_times if name == video_name), 0.0)
+            processing_time = processing_times.get(video_name, 0.0)
             
             # Extract timing info from detection
             best_detection = analysis.validation_result.best_detection
@@ -288,12 +290,12 @@ class ProcessingSessionManager:
             return
             
         logger.info("⚪ VIDEOS WITH NO ANIMALS DETECTED:")
+        rejection_reasons = dict(self.session_data.rejection_reasons)
+        processing_times = dict(self.session_data.processing_times)
         for video_path in self.failed_videos:
             video_name = video_path.name
-            # Find rejection reason from list of tuples
-            rejection_reason = next((reason for name, reason in self.session_data.rejection_reasons if name == video_name), 'unknown_reason')
-            # Find processing time from list of tuples
-            processing_time = next((time for name, time in self.session_data.processing_times if name == video_name), 0.0)
+            rejection_reason = rejection_reasons.get(video_name, 'unknown_reason')
+            processing_time = processing_times.get(video_name, 0.0)
             
             logger.info(f"  ⚪ {video_name}: reason={rejection_reason}, runtime={processing_time:.1f}s")
             
@@ -345,7 +347,7 @@ class ProcessingSessionManager:
                         
                         # Show actual classification scores from all attempts
                         if all_results:
-                            logger.info(f"       🔬 Classification scores (all below threshold 0.5):")
+                            logger.info(f"       🔬 Classification scores (all below threshold {self.config.animal_confidence_threshold}):")
                             for i, classified_seq in enumerate(all_results[:3]):  # Show first 3
                                 classification = classified_seq.classification
                                 conf = classification.animal_confidence
@@ -361,7 +363,7 @@ class ProcessingSessionManager:
                                     if result.species:
                                         logger.info(f"             Species: {result.species} (conf={result.species_confidence:.3f})")
                         else:
-                            logger.info(f"       Reason: All classifications below confidence threshold (0.5)")
+                            logger.info(f"       Reason: All classifications below confidence threshold ({self.config.animal_confidence_threshold})")
                 else:
                     logger.info(f"     🔬 Step 4: ⏭️ SKIPPED - Classification disabled")
         logger.info("")
@@ -453,14 +455,10 @@ class ProcessingSessionManager:
         
         # Per-video breakdown for detailed analysis
         logger.info("  📹 PER-VIDEO MODEL BREAKDOWN:")
+        contributions_by_video = dict(model_contributions_data)
         for video_name in sorted(videos_with_ml_data):
-            # Find contributions for this video
-            video_contributions = None
-            for vname, contribs in model_contributions_data:
-                if vname == video_name:
-                    video_contributions = contribs
-                    break
-                    
+            video_contributions = contributions_by_video.get(video_name)
+
             if video_contributions:
                 # Indicate if video passed or failed validation
                 status = "PASS" if video_name in videos_with_animals else "FAIL"

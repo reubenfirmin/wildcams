@@ -28,7 +28,6 @@ except ImportError:
     PYTORCH_WILDLIFE_AVAILABLE = False
 
 # Import ResNet for feature extraction
-from torchvision.models import resnet18, ResNet18_Weights
 
 logger = logging.getLogger('wildcams')
 
@@ -47,9 +46,7 @@ class ModelManager:
         self.yolo_detectors: Dict[str, Optional[YOLO]] = {}
         self.rtdetr_models: Dict[str, Optional[object]] = {}
         self.megadetector_variants: Dict[str, Optional[object]] = {}
-        self.feature_extractor: Optional[object] = None
-        
-        
+
         # Initialize models
         self._initialize_models()
     
@@ -64,8 +61,7 @@ class ModelManager:
             self._load_yolo_models()
             self._load_rtdetr_models()
             self._load_megadetector_models()
-            self._load_feature_extractor()
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to initialize ML ensemble: {e}")
     
@@ -144,19 +140,6 @@ class ModelManager:
             logger.warning("⚠️ PyTorch-Wildlife not available - MegaDetector variants disabled")
         else:
             logger.info("⏭️ Skipping MegaDetector variants (none in ensemble configuration)")
-    
-    def _load_feature_extractor(self):
-        """Load ResNet18 feature extractor for clustering."""
-        try:
-            logger.info("Loading ResNet18 feature extractor...")
-            self.feature_extractor = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-            self.feature_extractor.eval()
-            if torch.cuda.is_available():
-                self.feature_extractor = self.feature_extractor.cuda()
-            logger.info("✅ ResNet18 feature extractor loaded successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to load ResNet18 feature extractor: {e}")
-            self.feature_extractor = None
     
     def get_model(self, model_name: str):
         """Get a specific model by name."""

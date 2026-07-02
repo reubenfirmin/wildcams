@@ -1,14 +1,61 @@
-# Wildlife camera processing 
+# Wildlife camera processing
 
 This project uses a locally running CPU feasible ML pipeline to process wildlife camera videos.
 
-The project is setup using *Nix* and *direnv* to supply system level dependencies. *Uv* is used to manage python dependencies. 
+The project is setup using **uv** for Python dependency management and **direnv** for automatic environment setup.
+
+## Quick Start
+
+### Setup
+```bash
+# Install uv if needed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install direnv (Fedora)
+sudo dnf install direnv
+
+# Add to your shell config (~/.bashrc or ~/.zshrc)
+eval "$(direnv hook bash)"  # or zsh, fish, etc.
+
+# Enter project directory (direnv will auto-load)
+cd wildcams
+direnv allow  # first time only
+```
+
+### Usage
+
+**Automatic SD card downloading** (auto-starts with direnv):
+```bash
+# Monitor watcher activity
+tail -f .sd_watcher.log
+
+# Stop watcher
+./stop-watcher.sh
+
+# Manually restart watcher
+./watch.sh
+```
+
+**Process videos**:
+```bash
+# Process all videos in ./videos directory
+./process.py
+
+# Or use convenience wrapper
+./process-videos.sh
+
+# Process specific videos
+./process.py --video-filter "GH.*"
+
+# See all options
+./process.py --help
+```
 
 ## Why?
 
 I wanted:
 
-1) exposure to uv and nix
+1) exposure to uv and modern Python tooling
 2) to see how far I could push a 100% claude coded project, which this is
 3) to automate a tedious task I do every few weeks when the wildlife cameras come in from the jungle
 

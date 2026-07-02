@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List
 import numpy as np
 from pathlib import Path
 
-from core.data_types import ClassificationResult, BioCLIPResult, DeepFauneResult, InferenceResult
+from core.data_types import ClassificationResult, InferenceResult
 from config import ProcessingConfig
 from .bioclip_inference import BioCLIPInference
 from .deepfaune_inference import DeepFauneInference
@@ -106,10 +106,9 @@ class ClassificationCoordinator:
         if not results:
             raise RuntimeError("No classification results to combine")
         
-        # Separate species-capable from non-species-capable models
+        # Species-capable models supply the species label when the ensemble confirms an animal
         species_models = [r for r in results if r.can_identify_species]
-        animal_models = [r for r in results if not r.can_identify_species]
-        
+
         # Use "either model passes" strategy - if any model says animal=True, ensemble says animal=True
         is_ensemble_animal = any(result.is_animal for result in results)
         

@@ -7,6 +7,8 @@ Clean typed system with proper data structures.
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Optional
+import time
+import logging
 from config import ProcessingConfig
 from core.data_types import (
     MotionDetectionResult, CameraHandlingResult, FullFrameValidationResult,
@@ -14,6 +16,8 @@ from core.data_types import (
 )
 from core.data_types import ValidationResult
 from core.data_types import AnimalClassificationResult
+
+logger = logging.getLogger('wildcams')
 
 class PipelineStep(ABC):
     """Abstract base class for pipeline steps."""
@@ -94,54 +98,87 @@ class PipelineOrchestrator:
     
     def process(self, video_path: Path, config: ProcessingConfig) -> VideoAnalysis:
         """Process video through entire typed pipeline."""
+        pipeline_start = time.time()
+        logger.info(f"⏱️  Pipeline START for {video_path.name}")
+
         # Step 1: Motion Detection
+        step1_start = time.time()
+        logger.info(f"⏱️  Step 1 (Motion Detection) START")
         motion_result = self.motion_step.process(video_path, config)
-        
+        step1_duration = time.time() - step1_start
+        logger.info(f"⏱️  Step 1 (Motion Detection) COMPLETE - {step1_duration:.2f}s")
+
         if not motion_result.success:
+            pipeline_duration = time.time() - pipeline_start
+            logger.info(f"⏱️  Pipeline FAILED at Step 1 - Total: {pipeline_duration:.2f}s")
             return self._create_failed_analysis(video_path, motion_result, None, None)
-        
+
         if motion_result.early_exit:
+            pipeline_duration = time.time() - pipeline_start
+            logger.info(f"⏱️  Pipeline EARLY EXIT at Step 1 - Total: {pipeline_duration:.2f}s")
             return self._create_early_exit_analysis(video_path, motion_result, None, None)
-        
+
         # Step 2: Camera Handling
+        step2_start = time.time()
+        logger.info(f"⏱️  Step 2 (Camera Handling) START")
         camera_result = self.camera_step.process(video_path, config, motion_result)
-        
+        step2_duration = time.time() - step2_start
+        logger.info(f"⏱️  Step 2 (Camera Handling) COMPLETE - {step2_duration:.2f}s")
+
         if not camera_result.success:
+            pipeline_duration = time.time() - pipeline_start
+            logger.info(f"⏱️  Pipeline FAILED at Step 2 - Total: {pipeline_duration:.2f}s")
             return self._create_failed_analysis(video_path, motion_result, camera_result, None)
-            
+
         if camera_result.early_exit:
+            pipeline_duration = time.time() - pipeline_start
+            logger.info(f"⏱️  Pipeline EARLY EXIT at Step 2 - Total: {pipeline_duration:.2f}s")
             return self._create_early_exit_analysis(video_path, motion_result, camera_result, None)
-        
+
         # Step 3: Full Frame Validation
+        step3_start = time.time()
+        logger.info(f"⏱️  Step 3 (Full Frame Validation) START")
         validation_result = self.validation_step.process(video_path, config, motion_result, camera_result)
-        
+        step3_duration = time.time() - step3_start
+        logger.info(f"⏱️  Step 3 (Full Frame Validation) COMPLETE - {step3_duration:.2f}s")
+
         if not validation_result.success:
+            pipeline_duration = time.time() - pipeline_start
+            logger.info(f"⏱️  Pipeline FAILED at Step 3 - Total: {pipeline_duration:.2f}s")
             return self._create_failed_analysis(video_path, motion_result, camera_result, validation_result)
-        
+
         # Step 4: Animal Classification (optional)
         classification_result = None
         if self.classification_step and config.enable_animal_classification:
+            step4_start = time.time()
+            logger.info(f"⏱️  Step 4 (Animal Classification) START")
             from core.data_types import ValidationResult as ValidationResultData
             # Convert FullFrameValidationResult to ValidationResult for Step 4
             step3_validation = ValidationResultData(
                 animals_detected=True,
                 confidence=0.0,  # Will be recalculated
-                ensemble_score=0.0,  # Will be recalculated  
+                ensemble_score=0.0,  # Will be recalculated
                 composite_score=0.0,  # Will be recalculated
-                validated_sequences_count=len(validation_result.data.validated_sequences),
+                validated_sequences_count=len(validation_result.validated_sequences),
                 best_detection=None,  # Will be set
                 reason=None
             )
             # Add validated sequences manually since it's not in constructor
-            step3_validation.validated_sequences = validation_result.data.validated_sequences
-            
+            step3_validation.validated_sequences = validation_result.validated_sequences
+
             classification_result = self.classification_step.process(video_path, step3_validation, config)
-            
+            step4_duration = time.time() - step4_start
+            logger.info(f"⏱️  Step 4 (Animal Classification) COMPLETE - {step4_duration:.2f}s")
+
             # If classification filtered out all sequences, create failed analysis but KEEP classification_result
             if len(classification_result.animal_sequences) == 0:
+                pipeline_duration = time.time() - pipeline_start
+                logger.info(f"⏱️  Pipeline COMPLETE (filtered by classification) - Total: {pipeline_duration:.2f}s")
                 return self._create_classification_filtered_analysis(video_path, motion_result, camera_result, validation_result, classification_result)
-        
+
         # Create complete analysis
+        pipeline_duration = time.time() - pipeline_start
+        logger.info(f"⏱️  Pipeline COMPLETE - Total: {pipeline_duration:.2f}s")
         return self._create_successful_analysis(video_path, motion_result, camera_result, validation_result, classification_result)
     
     def _create_successful_analysis(self, 
@@ -170,10 +207,10 @@ class PipelineOrchestrator:
             
         else:
             # No Step 4 or Step 4 disabled - use Step 3 results
-            if not validation_result.data.validated_sequences:
+            if not validation_result.validated_sequences:
                 return self._create_failed_analysis(video_path, motion_result, camera_result, validation_result)
             
-            sequences_to_use = validation_result.data.validated_sequences
+            sequences_to_use = validation_result.validated_sequences
             best_sequence = max(sequences_to_use, key=lambda s: s.ensemble_score)
             species_summary = None
         

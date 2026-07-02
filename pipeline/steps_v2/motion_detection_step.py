@@ -10,7 +10,7 @@ from config import ProcessingConfig
 from motion import MotionDetector, MotionTracker
 from pipeline.step_interface_v2 import MotionDetectionStep
 from core.data_types import (
-    MotionDetectionResult, MotionDetectionData, MotionDetectionMetadata,
+    MotionDetectionResult, MotionDetectionMetadata,
     StepTiming, MotionTrack, MotionRegion, BoundingBox,
     create_empty_motion_result
 )
@@ -58,7 +58,7 @@ class MotionDetectionStepImpl(MotionDetectionStep):
         # Create typed result
         return MotionDetectionResult(
             success=True,
-            data=MotionDetectionData(motion_tracks=motion_tracks),
+            motion_tracks=motion_tracks,
             metadata=MotionDetectionMetadata(
                 step_name='motion_detection',
                 timing=StepTiming(start_time, end_time, end_time - start_time),

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
 from core.data_types import CompositeScore
-from core.data_types import MotionTrack, ValidationSequence, Detection, BoundingBox, Track
+from core.data_types import MotionTrack, ValidationSequence, Detection, BoundingBox, Track, ScoredDetection
 
 logger = logging.getLogger('wildcams')
 
@@ -44,7 +44,7 @@ class FullFrameValidator:
             return []
         
         cap = cv2.VideoCapture(str(video_path))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fps = cap.get(cv2.CAP_PROP_FPS) or config.default_fps
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         logger.info(f"[STEP3] Running full-frame analysis on {len(motion_tracks)} motion tracks")
@@ -227,7 +227,7 @@ class FullFrameValidator:
             # Track model contributions
             if model_detections:
                 self._model_contributions[model_name]['total_detections'] += len(model_detections)
-                max_conf = max(det['confidence'] for det in model_detections)
+                max_conf = max(det.confidence for det in model_detections)
                 self._model_contributions[model_name]['max_confidence'] = max(
                     self._model_contributions[model_name]['max_confidence'], max_conf
                 )
@@ -247,9 +247,9 @@ class FullFrameValidator:
                     
                     if model_detections:
                         for det in model_detections:
-                            det_bbox = det['bbox']
+                            det_bbox = [det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2]
                             overlap = self._calculate_bbox_overlap(track_bbox, det_bbox)
-                            
+
                             if overlap >= config.spatial_overlap_threshold:
                                 valid_detections.append({
                                     'detection': det,
@@ -263,7 +263,7 @@ class FullFrameValidator:
                         # Process valid detections - create ONE synthetic detection per model per track
                         if valid_detections:
                             # Find best detection by score (confidence * overlap) after consensus boosting
-                            consensus_boost = 1.0 + 0.1 * (len(valid_detections) - 1)
+                            consensus_boost = 1.0 + config.consensus_boost_per_detection * (len(valid_detections) - 1)
                             
                             best_detection = None
                             best_score = 0.0
@@ -271,9 +271,9 @@ class FullFrameValidator:
                             for valid_det in valid_detections:
                                 det = valid_det['detection']
                                 overlap = valid_det['overlap']
-                                boosted_conf = min(1.0, det['confidence'] * consensus_boost)
+                                boosted_conf = min(1.0, det.confidence * consensus_boost)
                                 score = boosted_conf * overlap
-                                
+
                                 if score > best_score:
                                     best_score = score
                                     best_detection = {
@@ -283,34 +283,31 @@ class FullFrameValidator:
                                         'boosted_conf': boosted_conf,
                                         'score': score
                                     }
-                            
+
                             # Log ONE synthetic detection representing the best from this model for this track
                             det = best_detection['detection']
                             overlap = best_detection['overlap']
                             bbox_str = best_detection['bbox_str']
                             boosted_conf = best_detection['boosted_conf']
                             overall_score = best_detection['score']
-                            
+
                             consensus_note = f"consensus:{len(valid_detections)}" if len(valid_detections) > 1 else "single"
-                            logger.info(f"✅ | {model_name} | {bbox_str} | conf:{det['confidence']:.3f}→{boosted_conf:.3f} | ovlp:{overlap:.3f} | {motion_bbox_str} | scor:{overall_score:.3f} | spatial_valid | {overlap_type} | track_{track_id} | {consensus_note}")
-                            
+                            logger.info(f"✅ | {model_name} | {bbox_str} | conf:{det.confidence:.3f}→{boosted_conf:.3f} | ovlp:{overlap:.3f} | {motion_bbox_str} | scor:{overall_score:.3f} | spatial_valid | {overlap_type} | track_{track_id} | {consensus_note}")
+
                             # Track spatial valid contributions
                             self._model_contributions[model_name]['spatial_valid_count'] += 1
                             self._model_contributions[model_name]['total_score'] += overall_score
-                            
-                            # Store ONE synthetic detection for track evaluation (use original confidence for reporting)
-                            det_copy = det.copy()
-                            det_copy['source'] = model_name
-                            det_copy['confidence'] = det['confidence']  # Use original confidence for final reporting
-                            det_copy['boosted_confidence'] = boosted_conf
-                            det_copy['original_confidence'] = det['confidence']
-                            det_copy['consensus_boost'] = consensus_boost
-                            det_copy['consensus_count'] = len(valid_detections)
-                            det_copy['motion_overlap'] = overlap
-                            det_copy['frame_idx'] = frame_idx
-                            det_copy['timestamp'] = timestamp
-                            det_copy['overlap_type'] = overlap_type
-                            track_detections[track_id].append(det_copy)
+
+                            # Store ONE synthetic ScoredDetection for track evaluation. The wrapped
+                            # Detection already carries source=model_name, frame_idx, timestamp.
+                            track_detections[track_id].append(ScoredDetection(
+                                detection=det,
+                                boosted_confidence=boosted_conf,
+                                motion_overlap=overlap,
+                                overlap_type=overlap_type,
+                                consensus_boost=consensus_boost,
+                                consensus_count=len(valid_detections),
+                            ))
                     
                     # If no detections overlapped with this track, log summary  
                     if overlapping_count == 0:
@@ -332,11 +329,12 @@ class FullFrameValidator:
         # Calculate ensemble score per track for this frame (after all models processed)
         for track in extended_tracks:
             track_id = track['track_id']
-            track_frame_detections = [d for d in track_detections[track_id] if d['frame_idx'] == frame_idx]
-            
-            # Always evaluate each track, even if no detections (use boosted confidence for ensemble scoring)
-            track_ensemble_score = sum(d['boosted_confidence'] for d in track_frame_detections) if track_frame_detections else 0.0
-            track_passed = track_ensemble_score >= config.confidence_threshold
+            track_frame_detections = [d for d in track_detections[track_id] if d.detection.frame_idx == frame_idx]
+
+            # Always evaluate each track, even if no detections (use boosted confidence for ensemble scoring).
+            # The per-frame gate is separately configurable; it defaults to confidence_threshold.
+            track_ensemble_score = sum(d.boosted_confidence for d in track_frame_detections) if track_frame_detections else 0.0
+            track_passed = track_ensemble_score >= config.frame_pass_confidence_threshold
             
             if track_passed:
                 frame_valid = True
@@ -391,78 +389,64 @@ class FullFrameValidator:
                 continue
             
             # Calculate track statistics (use original confidence for reporting)
-            avg_confidence = sum(d['confidence'] for d in detections) / len(detections)
-            max_confidence = max(d['confidence'] for d in detections)
-            summed_confidence = sum(d['confidence'] for d in detections)
-            
+            avg_confidence = sum(d.detection.confidence for d in detections) / len(detections)
+            max_confidence = max(d.detection.confidence for d in detections)
+            summed_confidence = sum(d.detection.confidence for d in detections)
+
             # Calculate boosted statistics for validation logic
-            avg_boosted_confidence = sum(d['boosted_confidence'] for d in detections) / len(detections)
-            max_boosted_confidence = max(d['boosted_confidence'] for d in detections)
-            summed_boosted_confidence = sum(d['boosted_confidence'] for d in detections)
+            avg_boosted_confidence = sum(d.boosted_confidence for d in detections) / len(detections)
+            max_boosted_confidence = max(d.boosted_confidence for d in detections)
+            summed_boosted_confidence = sum(d.boosted_confidence for d in detections)
             
-            # Count passed frames for this track
+            # Count passed frames for this track (distinct sampled frames in which it passed)
             track_frames = track_sample_frames[track_id]
-            passed_frames = 0
-            
+            passed_frame_indices = []
+
             for frame_result in frame_results:
                 if frame_result['frame_idx'] in track_frames:
                     track_result = next((tr for tr in frame_result['track_results'] if tr['track_id'] == track_id), None)
                     if track_result and track_result['passed']:
-                        passed_frames += 1
-            
+                        passed_frame_indices.append(frame_result['frame_idx'])
+            passed_frames = len(passed_frame_indices)
+
             # Validation criteria (use boosted confidence for thresholding)
             confidence_passed = summed_boosted_confidence >= config.confidence_threshold
-            frames_passed = len(detections) >= config.min_track_frames
-            temporal_continuity_passed = True  # Simplified for now
-            
+            # Count distinct passed frames, not synthetic detections (there is one detection
+            # per model per frame, so len(detections) overcounts a single-frame track).
+            frames_passed = passed_frames >= config.min_track_frames
+            temporal_continuity_passed = self._check_temporal_continuity(passed_frame_indices, fps, config)
+
             validation_passed = confidence_passed and frames_passed and temporal_continuity_passed
             
             # Log track evaluation in original format
             logger.info(f"TRACK | {video_path.stem} | track_{track_id}")
             track_icon = "✅" if validation_passed else "❌"
             # Calculate composite score for logging (even for failed tracks)
-            composite_score = self._calculate_composite_score(track, detections, track_frames, fps) if detections else CompositeScore.empty().to_dict()
-            
-            logger.info(f"{track_icon} | duration={track['duration_seconds']:.2f}s | frames_evaluated={len(track_frames)} | frames_passed={passed_frames} | detections={len(detections)} | summed_conf={summed_confidence:.3f} | avg_conf={avg_confidence:.3f} | max_conf={max_confidence:.3f} | ensemble={summed_boosted_confidence:.3f} | composite={composite_score['final_score']:.3f} | models={composite_score['consensus_models']} | motion_align={composite_score['motion_alignment']:.3f} | temp_density={composite_score['temporal_density']:.3f} | conf_pass={confidence_passed} | frames_pass={frames_passed} | temporal_pass={temporal_continuity_passed} | validated={validation_passed}")
+            composite_score = self._calculate_composite_score(track, detections, track_frames, fps, config) if detections else CompositeScore.empty()
+
+            logger.info(f"{track_icon} | duration={track['duration_seconds']:.2f}s | frames_evaluated={len(track_frames)} | frames_passed={passed_frames} | detections={len(detections)} | summed_conf={summed_confidence:.3f} | avg_conf={avg_confidence:.3f} | max_conf={max_confidence:.3f} | ensemble={summed_boosted_confidence:.3f} | composite={composite_score.final_score:.3f} | models={composite_score.consensus_models} | motion_align={composite_score.motion_alignment:.3f} | temp_density={composite_score.temporal_density:.3f} | conf_pass={confidence_passed} | frames_pass={frames_passed} | temporal_pass={temporal_continuity_passed} | validated={validation_passed}")
             
             if validation_passed:
-                # Find best detection
-                best_detection_dict = max(detections, key=lambda d: d['confidence'])
-                
+                # Find best scored detection by original confidence
+                best_scored = max(detections, key=lambda d: d.detection.confidence)
+                best_raw = best_scored.detection
+
                 # Calculate multi-dimensional confidence score
-                composite_score = self._calculate_composite_score(track, detections, track_frames, fps)
-                
-                # Create typed best detection
-                best_detection_bbox = BoundingBox(
-                    best_detection_dict['bbox'][0],
-                    best_detection_dict['bbox'][1],
-                    best_detection_dict['bbox'][2],
-                    best_detection_dict['bbox'][3]
-                )
-                
+                composite_score = self._calculate_composite_score(track, detections, track_frames, fps, config)
+
+                # Create typed best detection (tagged as a full-frame validation detection)
                 best_detection = Detection(
-                    confidence=best_detection_dict['confidence'],
-                    bbox=best_detection_bbox,
-                    source=f"fullframe_{best_detection_dict.get('source', 'unknown')}",
+                    confidence=best_raw.confidence,
+                    bbox=best_raw.bbox,
+                    source=f"fullframe_{best_raw.source}",
                     class_name='animal',
-                    timestamp=best_detection_dict.get('timestamp', track_frames[0] / fps),
-                    frame_idx=best_detection_dict.get('frame_idx', track_frames[0])
+                    timestamp=best_raw.timestamp,
+                    frame_idx=best_raw.frame_idx
                 )
-                
-                # Convert all detections to typed objects
-                typed_detections = []
-                for det in detections:
-                    det_bbox = BoundingBox(det['bbox'][0], det['bbox'][1], det['bbox'][2], det['bbox'][3])
-                    typed_det = Detection(
-                        confidence=det['confidence'],
-                        bbox=det_bbox,
-                        source=det.get('source', 'unknown'),
-                        class_name='animal',
-                        timestamp=det.get('timestamp', 0.0),
-                        frame_idx=det.get('frame_idx', 0)
-                    )
-                    typed_detections.append(typed_det)
-                
+
+                # The wrapped Detection objects are already typed
+                typed_detections = [d.detection for d in detections]
+
                 # Create track object
                 track_obj = Track(
                     track_id=track_id,
@@ -480,7 +464,7 @@ class FullFrameValidator:
                     track=track_obj,
                     detections=typed_detections,
                     ensemble_score=summed_boosted_confidence,
-                    composite_score=composite_score['final_score'],
+                    composite_score=composite_score.final_score,
                     best_detection=best_detection,
                     frame_range=(min(track_frames), max(track_frames)),
                     duration_seconds=track['duration_seconds']
@@ -518,67 +502,81 @@ class FullFrameValidator:
         """Get model contribution statistics for this video."""
         return self._model_contributions.copy()
     
-    def _calculate_composite_score(self, track: Dict, detections: List[Dict], track_frames: List[int], fps: float) -> Dict:
+    def _check_temporal_continuity(self, passed_frame_indices: List[int], fps: float, config) -> bool:
+        """
+        Check that a track's passed frames form a temporally continuous sequence.
+
+        Opt-in via --enable-temporal-continuity-check. When disabled (default), this
+        returns True to preserve the pipeline's prior always-pass behavior. When enabled,
+        the largest gap between consecutive passed frames must not exceed
+        --temporal-continuity-max-gap-seconds (animals do not teleport; a large gap between
+        strong detections suggests two unrelated events rather than one continuous track).
+        """
+        if not config.enable_temporal_continuity_check:
+            return True
+
+        if len(passed_frame_indices) <= 1:
+            # A single passed frame is trivially continuous.
+            return True
+
+        ordered = sorted(passed_frame_indices)
+        max_gap_seconds = max(
+            (ordered[i + 1] - ordered[i]) / fps for i in range(len(ordered) - 1)
+        )
+        return max_gap_seconds <= config.temporal_continuity_max_gap_seconds
+
+    def _calculate_composite_score(self, track: Dict, detections: List[ScoredDetection], track_frames: List[int], fps: float, config) -> CompositeScore:
         """
         Calculate multi-dimensional confidence score that combines multiple strong signals.
-        
+
         Args:
             track: Track information with duration
-            detections: List of detections for this track
+            detections: List of ScoredDetection for this track
             track_frames: List of sampled frame indices for this track
             fps: Video frame rate
-            
+
         Returns:
-            Dict with final score and breakdown of components
+            CompositeScore with final score and breakdown of components
         """
         if not detections:
-            return {
-                'final_score': 0.0,
-                'base_score': 0.0,
-                'temporal_density': 0.0,
-                'consensus_models': 0,
-                'motion_alignment': 0.0,
-                'duration_seconds': track['duration_seconds'],
-                'temporal_multiplier': 0.0,
-                'consensus_multiplier': 0.0,
-                'motion_multiplier': 0.0,
-                'duration_bonus': 0.0
-            }
-        
+            return CompositeScore.empty()
+
         # Base ensemble score (sum of boosted model confidences)
         # Base score is sum of boosted confidences (distinct from ensemble/conf scores)
-        base_score = sum(d.get('boosted_confidence', 0.0) for d in detections)
-        
+        base_score = sum(d.boosted_confidence for d in detections)
+
         # 1. Temporal consistency (how dense are detections across track)
         track_duration_frames = len(track_frames)
         temporal_density = len(detections) / max(1, track_duration_frames)
-        temporal_multiplier = min(2.0, 1.0 + temporal_density)  # 1.0-2.0x based on detection density
-        
+        temporal_multiplier = min(config.composite_temporal_multiplier_cap, 1.0 + temporal_density)
+
         # 2. Multi-model consensus (how many different models contributed)
-        unique_models = len(set(d['source'] for d in detections))
-        consensus_multiplier = 1.0 + (0.2 * (unique_models - 1))  # +20% per additional model beyond first
-        
+        unique_models = len(set(d.detection.source for d in detections))
+        consensus_multiplier = 1.0 + (config.composite_consensus_boost_per_model * (unique_models - 1))
+
         # 3. Motion correlation (how well do ML detections align with motion regions)
-        avg_motion_overlap = sum(d.get('motion_overlap', 0.0) for d in detections) / len(detections)
-        motion_multiplier = 0.5 + (1.5 * avg_motion_overlap)  # 0.5-2.0x based on motion alignment
-        
+        avg_motion_overlap = sum(d.motion_overlap for d in detections) / len(detections)
+        motion_multiplier = config.composite_motion_multiplier_base + (config.composite_motion_multiplier_span * avg_motion_overlap)
+
         # 4. Track duration bonus (longer tracks are more reliable indicators)
         duration_seconds = track['duration_seconds']
-        duration_bonus = min(1.5, 0.8 + (duration_seconds / 6.0))  # Up to 1.5x for 4+ second tracks
-        
+        duration_bonus = min(
+            config.composite_duration_bonus_cap,
+            config.composite_duration_bonus_base + (duration_seconds / config.composite_duration_bonus_divisor)
+        )
+
         # Calculate final score with all multipliers
         final_score = base_score * temporal_multiplier * consensus_multiplier * motion_multiplier * duration_bonus
-        
-        
-        return {
-            'final_score': final_score,
-            'base_score': base_score,
-            'temporal_density': temporal_density,
-            'consensus_models': unique_models,
-            'motion_alignment': avg_motion_overlap,
-            'duration_seconds': duration_seconds,
-            'temporal_multiplier': temporal_multiplier,
-            'consensus_multiplier': consensus_multiplier,
-            'motion_multiplier': motion_multiplier,
-            'duration_bonus': duration_bonus
-        }
+
+        return CompositeScore(
+            final_score=final_score,
+            base_score=base_score,
+            temporal_density=temporal_density,
+            consensus_models=unique_models,
+            motion_alignment=avg_motion_overlap,
+            duration_seconds=duration_seconds,
+            temporal_multiplier=temporal_multiplier,
+            consensus_multiplier=consensus_multiplier,
+            motion_multiplier=motion_multiplier,
+            duration_bonus=duration_bonus,
+        )

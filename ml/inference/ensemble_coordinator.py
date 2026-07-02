@@ -4,9 +4,11 @@ Orchestrates inference across multiple model types and coordinates results.
 """
 
 import logging
-from typing import List, Dict, Optional
+from dataclasses import replace
+from typing import List, Optional
 import numpy as np
 
+from core.data_types import Detection, BoundingBox
 from .yolo_inference import YOLOInferenceEngine
 from .rtdetr_inference import RTDETRInferenceEngine
 from .megadetector_inference import MegaDetectorInferenceEngine
@@ -44,7 +46,7 @@ class EnsembleCoordinator:
     def run_single_model_detection(self, model_name: str, frame: np.ndarray, config,
                                  timestamp_seconds: float = 0.0, frame_idx: int = 0, 
                                  full_frame: np.ndarray = None, 
-                                 accepted_rtdetr_overlap: float = 0.5) -> List[Dict]:
+                                 accepted_rtdetr_overlap: float = 0.5) -> List[Detection]:
         """
         Run detection on a single model and return results.
         
@@ -94,7 +96,7 @@ class EnsembleCoordinator:
         return detections
     
     def run_ensemble_detection(self, frame: np.ndarray, config, timestamp_seconds: float = 0.0, 
-                             frame_idx: int = 0, full_frame: np.ndarray = None) -> List[Dict]:
+                             frame_idx: int = 0, full_frame: np.ndarray = None) -> List[Detection]:
         """
         Run detection across all models in the ensemble.
         
@@ -122,7 +124,7 @@ class EnsembleCoordinator:
         
         return all_detections
     
-    def run_enhanced_preprocessing(self, frame: np.ndarray, config) -> List[Dict]:
+    def run_enhanced_preprocessing(self, frame: np.ndarray, config) -> List[Detection]:
         """
         Run detection with enhanced preprocessing (TTA, multi-scale).
         
@@ -152,20 +154,19 @@ class EnsembleCoordinator:
                 
                 # Adjust coordinates back to original scale
                 if scale_factor != 1.0:
-                    for det in detections:
-                        bbox = det['bbox']
-                        det['bbox'] = [coord / scale_factor for coord in bbox]
-                
-                # Add processing metadata
-                for det in detections:
-                    det['transform'] = transform_name
-                    det['scale'] = scale_name
-                
+                    detections = [
+                        replace(det, bbox=BoundingBox(
+                            det.bbox.x1 / scale_factor, det.bbox.y1 / scale_factor,
+                            det.bbox.x2 / scale_factor, det.bbox.y2 / scale_factor,
+                        ))
+                        for det in detections
+                    ]
+
                 all_detections.extend(detections)
         
         return all_detections
     
-    def run_multiscale_analysis(self, frame: np.ndarray, config, timestamp_seconds: float = 0.0) -> List[Dict]:
+    def run_multiscale_analysis(self, frame: np.ndarray, config, timestamp_seconds: float = 0.0) -> List[Detection]:
         """
         Run detection with multi-scale analysis.
         
@@ -198,12 +199,7 @@ class EnsembleCoordinator:
                     source_size=(int(frame.shape[1] * scale_factor), int(frame.shape[0] * scale_factor)),
                     target_size=(frame.shape[1], frame.shape[0])
                 )
-            
-            # Add scale metadata
-            for det in scale_detections:
-                det['scale_factor'] = scale_factor
-                det['scale_name'] = scale_name
-            
+
             detections.extend(scale_detections)
         
         return detections
@@ -216,9 +212,9 @@ class EnsembleCoordinator:
         available.extend(self.megadetector_engine.get_supported_models())
         return available
     
-    def check_extended_class_correlations(self, detections: List[Dict], timestamp: float) -> None:
+    def check_extended_class_correlations(self, detections: List[Detection], timestamp: float) -> None:
         """Check for correlations between MegaDetector extended classes and YOLO detections."""
-        yolo_detections = [d for d in detections if any(d.get('source', '').startswith(model) for model in self.yolo_engine.get_supported_models())]
+        yolo_detections = [d for d in detections if any(d.source.startswith(model) for model in self.yolo_engine.get_supported_models())]
         
         if yolo_detections:
             self.megadetector_engine.check_extended_class_correlations(detections, yolo_detections, timestamp)

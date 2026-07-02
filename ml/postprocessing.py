@@ -6,7 +6,10 @@ Handles NMS, filtering, and coordinate transformations.
 import torch
 import numpy as np
 import logging
-from typing import List, Dict, Tuple
+from dataclasses import replace
+from typing import List, Tuple
+
+from core.data_types import Detection, BoundingBox
 
 logger = logging.getLogger('wildcams')
 
@@ -16,32 +19,30 @@ class PostprocessingPipeline:
     def __init__(self):
         pass
     
-    def apply_advanced_nms(self, detections: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
+    def apply_advanced_nms(self, detections: List[Detection], iou_threshold: float = 0.5) -> List[Detection]:
         """
         Apply advanced Non-Maximum Suppression across ensemble.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             iou_threshold: IoU threshold for NMS
-            
+
         Returns:
             Filtered detections after NMS
         """
         if len(detections) <= 1:
             return detections
-        
+
         # Convert to format needed for NMS
         import torchvision.ops as ops
-        
+
         boxes = []
         scores = []
-        sources = []
-        
+
         for det in detections:
-            boxes.append(det['bbox'])
-            scores.append(det['confidence'])
-            sources.append(det['source'])
-        
+            boxes.append([det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2])
+            scores.append(det.confidence)
+
         if not boxes:
             return []
         
@@ -61,42 +62,41 @@ class PostprocessingPipeline:
         
         return filtered_detections
     
-    def filter_by_confidence(self, detections: List[Dict], threshold: float) -> List[Dict]:
+    def filter_by_confidence(self, detections: List[Detection], threshold: float) -> List[Detection]:
         """
         Filter detections by confidence threshold.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             threshold: Minimum confidence threshold
-            
+
         Returns:
             Filtered detections
         """
-        filtered = [det for det in detections if det['confidence'] >= threshold]
+        filtered = [det for det in detections if det.confidence >= threshold]
         
         if len(filtered) != len(detections):
             logger.debug(f"Confidence filtering: {len(detections)} → {len(filtered)} detections (threshold: {threshold})")
         
         return filtered
     
-    def filter_by_area(self, detections: List[Dict], min_area: int = 100, max_area: int = None) -> List[Dict]:
+    def filter_by_area(self, detections: List[Detection], min_area: int = 100, max_area: int = None) -> List[Detection]:
         """
         Filter detections by bounding box area.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             min_area: Minimum bounding box area
             max_area: Maximum bounding box area (None for no limit)
-            
+
         Returns:
             Filtered detections
         """
         filtered = []
-        
+
         for det in detections:
-            bbox = det['bbox']
-            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-            
+            area = det.bbox.area
+
             if area >= min_area:
                 if max_area is None or area <= max_area:
                     filtered.append(det)
@@ -106,148 +106,116 @@ class PostprocessingPipeline:
         
         return filtered
     
-    def convert_coordinates(self, detections: List[Dict], source_size: Tuple[int, int], 
-                           target_size: Tuple[int, int]) -> List[Dict]:
+    def convert_coordinates(self, detections: List[Detection], source_size: Tuple[int, int],
+                           target_size: Tuple[int, int]) -> List[Detection]:
         """
         Convert bounding box coordinates between different image sizes.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             source_size: (width, height) of source image
             target_size: (width, height) of target image
-            
+
         Returns:
             Detections with converted coordinates
         """
         if source_size == target_size:
             return detections
-        
+
         source_w, source_h = source_size
         target_w, target_h = target_size
-        
+
+        # A degenerate (zero-sized) source has no meaningful scale factor; leave boxes as-is.
+        if source_w <= 0 or source_h <= 0:
+            return detections
+
         scale_x = target_w / source_w
         scale_y = target_h / source_h
-        
+
         converted = []
-        for det in detections.copy():
-            bbox = det['bbox']
-            
-            # Scale coordinates
-            new_bbox = [
-                bbox[0] * scale_x,  # x1
-                bbox[1] * scale_y,  # y1
-                bbox[2] * scale_x,  # x2
-                bbox[3] * scale_y   # y2
-            ]
-            
-            # Update detection
-            det_copy = det.copy()
-            det_copy['bbox'] = new_bbox
-            converted.append(det_copy)
-        
+        for det in detections:
+            b = det.bbox
+            new_bbox = BoundingBox(b.x1 * scale_x, b.y1 * scale_y, b.x2 * scale_x, b.y2 * scale_y)
+            converted.append(replace(det, bbox=new_bbox))
+
         return converted
-    
-    def normalize_coordinates(self, detections: List[Dict], image_size: Tuple[int, int]) -> List[Dict]:
+
+    def normalize_coordinates(self, detections: List[Detection], image_size: Tuple[int, int]) -> List[Detection]:
         """
         Normalize bounding box coordinates to [0, 1] range.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             image_size: (width, height) of image
-            
+
         Returns:
             Detections with normalized coordinates
         """
         width, height = image_size
-        
+
+        # A degenerate (zero-sized) image cannot be normalized against; leave boxes as-is.
+        if width <= 0 or height <= 0:
+            return detections
+
         normalized = []
-        for det in detections.copy():
-            bbox = det['bbox']
-            
-            # Normalize coordinates
-            norm_bbox = [
-                bbox[0] / width,   # x1
-                bbox[1] / height,  # y1
-                bbox[2] / width,   # x2
-                bbox[3] / height   # y2
-            ]
-            
-            # Update detection
-            det_copy = det.copy()
-            det_copy['bbox'] = norm_bbox
-            normalized.append(det_copy)
-        
+        for det in detections:
+            b = det.bbox
+            norm_bbox = BoundingBox(b.x1 / width, b.y1 / height, b.x2 / width, b.y2 / height)
+            normalized.append(replace(det, bbox=norm_bbox))
+
         return normalized
-    
-    def denormalize_coordinates(self, detections: List[Dict], image_size: Tuple[int, int]) -> List[Dict]:
+
+    def denormalize_coordinates(self, detections: List[Detection], image_size: Tuple[int, int]) -> List[Detection]:
         """
         Denormalize bounding box coordinates from [0, 1] range to pixel coordinates.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             image_size: (width, height) of image
-            
+
         Returns:
             Detections with pixel coordinates
         """
         width, height = image_size
-        
+
         denormalized = []
-        for det in detections.copy():
-            bbox = det['bbox']
-            
-            # Denormalize coordinates
-            pixel_bbox = [
-                bbox[0] * width,   # x1
-                bbox[1] * height,  # y1
-                bbox[2] * width,   # x2
-                bbox[3] * height   # y2
-            ]
-            
-            # Update detection
-            det_copy = det.copy()
-            det_copy['bbox'] = pixel_bbox
-            denormalized.append(det_copy)
-        
+        for det in detections:
+            b = det.bbox
+            pixel_bbox = BoundingBox(b.x1 * width, b.y1 * height, b.x2 * width, b.y2 * height)
+            denormalized.append(replace(det, bbox=pixel_bbox))
+
         return denormalized
-    
-    def clip_to_image(self, detections: List[Dict], image_size: Tuple[int, int]) -> List[Dict]:
+
+    def clip_to_image(self, detections: List[Detection], image_size: Tuple[int, int]) -> List[Detection]:
         """
         Clip bounding boxes to image boundaries.
-        
+
         Args:
-            detections: List of detection dictionaries
+            detections: List of Detection objects
             image_size: (width, height) of image
-            
+
         Returns:
             Detections with clipped coordinates
         """
         width, height = image_size
-        
+
         clipped = []
-        for det in detections.copy():
-            bbox = det['bbox']
-            
-            # Clip coordinates
-            clipped_bbox = [
-                max(0, min(bbox[0], width)),   # x1
-                max(0, min(bbox[1], height)),  # y1
-                max(0, min(bbox[2], width)),   # x2
-                max(0, min(bbox[3], height))   # y2
-            ]
-            
+        for det in detections:
+            b = det.bbox
+            cx1 = max(0, min(b.x1, width))
+            cy1 = max(0, min(b.y1, height))
+            cx2 = max(0, min(b.x2, width))
+            cy2 = max(0, min(b.y2, height))
+
             # Skip invalid boxes
-            if clipped_bbox[2] <= clipped_bbox[0] or clipped_bbox[3] <= clipped_bbox[1]:
+            if cx2 <= cx1 or cy2 <= cy1:
                 continue
-            
-            # Update detection
-            det_copy = det.copy()
-            det_copy['bbox'] = clipped_bbox
-            clipped.append(det_copy)
-        
+
+            clipped.append(replace(det, bbox=BoundingBox(cx1, cy1, cx2, cy2)))
+
         return clipped
-    
-    def merge_detections(self, detection_groups: List[List[Dict]]) -> List[Dict]:
+
+    def merge_detections(self, detection_groups: List[List[Detection]]) -> List[Detection]:
         """
         Merge detections from multiple sources (e.g., TTA, multi-scale).
         

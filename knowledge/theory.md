@@ -2,9 +2,9 @@
 
 ## System Architecture Theory
 
-### 3-Step Pipeline Architecture
+### 4-Step Pipeline Architecture
 
-The system uses an optimized 3-step pipeline that eliminates crop analysis issues by connecting motion tracking directly to full-frame validation:
+The system uses an optimized 4-step pipeline that eliminates crop analysis issues by connecting motion tracking directly to full-frame validation, then filtering for animals specifically:
 
 #### **Step 1: Motion Detection + Temporal Tracking**
 - **Motion Detection**: MOG2/KNN background subtraction to identify movement regions
@@ -15,18 +15,26 @@ The system uses an optimized 3-step pipeline that eliminates crop analysis issue
 #### **Step 2: Camera Handling Detection (Early Filtering)**
 - **Spatial Dispersion Analysis**: Ratio of spatial clusters to tracks (dispersed movement = camera handling)
 - **Motion Sparsity Analysis**: Inverted motion density (sparse erratic movement = camera handling)
-- **Composite Scoring**: spatial_dispersion × motion_sparsity with configurable threshold (default: 8.0)
+- **Composite Scoring**: spatial_dispersion × motion_sparsity with configurable threshold (--composite-motion-threshold, default: 0.5)
 - **Early Exit**: Skips expensive ML processing on obvious false positives
 
 #### **Step 3: Full-Frame Analysis with Spatial Overlap Validation**
 - **Direct Motion Track Input**: Takes motion tracks directly from Step 2 (no crop analysis)
 - **Full Ensemble Processing**: Complete ensemble on full frames using configured models (YOLO + RT-DETR + MegaDetector variants)
 - **Temporal Frame Sampling**: Selects representative frames from each motion track (configurable via --max-validation-frames)
-- **Spatial Overlap Validation**: Requires 30% overlap between full-frame detections and motion regions
+- **Spatial Overlap Validation**: Requires minimum overlap between full-frame detections and motion regions (--spatial-overlap-threshold, default: 0.1)
 - **Model Contribution Tracking**: Comprehensive tracking of all ensemble models in full-frame context
 - **Validation Logic**: Simple confidence thresholding with spatial overlap requirement
 - **False Positive Reduction**: Spatial validation eliminates detections that don't correlate with motion
 - **Full-Frame Optimization**: All models process complete frames for optimal context and spatial understanding
+
+#### **Step 4: Animal Classification (enabled by default)**
+- **Purpose**: Filter validated sequences down to animals specifically, removing non-animal movement that survived Step 3.
+- **Classifier ensemble**: BioCLIP and DeepFaune (--classification-models, default: bioclip,deepfaune).
+- **"Either model passes" logic**: A sequence is confirmed as an animal if any classifier's animal confidence clears its threshold (--animal-confidence-threshold; per-model --bioclip-threshold, --deepfaune-threshold).
+- **Species labels**: Species-capable models (BioCLIP top-k, DeepFaune's class head) supply a species guess when the ensemble confirms an animal.
+- **Toggle**: --skip-animal-classification runs the pipeline as the older 3-step flow.
+- **Known geographic limitation**: DeepFaune's label space is European/Eurasian and BioCLIP is a general foundation model; neither is tuned for Costa Rican species. See models.md for the current model-currency assessment and roadmap.
 
 ## Model Theory
 
@@ -102,6 +110,20 @@ The system uses **spatial overlap validation** with simple confidence thresholdi
 - **Simple Scoring**: Direct confidence-based validation without complex ensemble weighting
 - **Model Transparency**: Each model's contribution explicitly logged and tracked
 
+#### Composite Score (track ranking)
+The composite score multiplies a base ensemble confidence by four multipliers. All
+coefficients are CLI-tunable (defaults preserve the historical hardcoded values):
+
+- **base_score**: sum of boosted per-model confidences for the track.
+- **temporal multiplier** = `min(--composite-temporal-multiplier-cap, 1 + detection_density)`.
+- **consensus multiplier** = `1 + --composite-consensus-boost-per-model × (unique_models − 1)`.
+- **motion multiplier** = `--composite-motion-multiplier-base + --composite-motion-multiplier-span × avg_motion_overlap`.
+- **duration bonus** = `min(--composite-duration-bonus-cap, --composite-duration-bonus-base + duration_s / --composite-duration-bonus-divisor)`.
+
+Per-frame, within a single model, overlapping detections get a small consensus boost of
+`1 + --consensus-boost-per-detection × (n − 1)` before scoring. FPS falls back to
+`--default-fps` when a video reports none.
+
 ### Scientific Logging Format
 
 The system produces structured scientific logs with three types of evaluation rows:
@@ -138,6 +160,6 @@ TRACK | {video} | {track_id}
 
 ### Key Metrics
 - **ensemble_score**: Confidence-weighted combination of all model outputs (0.0-1.0 scale)
-- **spatial_valid**: Detection bbox overlaps ≥ accepted_rtdetr_overlap with motion regions
-- **temporal_continuity**: Validated detections must be within max_skip_frames of each other
+- **spatial_valid**: Detection bbox overlaps ≥ --spatial-overlap-threshold with motion regions
+- **temporal_continuity**: Optional track-level check (--enable-temporal-continuity-check, default off). When on, the largest gap between a track's passed frames must be ≤ --temporal-continuity-max-gap-seconds. Default off preserves the prior always-pass behavior.
 - **models_active**: Number of models contributing spatially valid detections

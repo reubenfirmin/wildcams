@@ -2,16 +2,24 @@
 
 ```
 wildcams/
-├── process.py                          # Main CLI entry point
+├── process.py                          # Main CLI entry point (uv PEP 723 inline script)
+├── process-videos.sh                   # Convenience wrapper around process.py
+├── watch.sh                            # Start/restart the SD card watcher daemon
+├── stop-watcher.sh                     # Stop the SD card watcher daemon
 ├── CLAUDE.md                           # Project instructions
 ├── README.md                           # Project documentation
-├── pyproject.toml                      # Python project configuration
-├── flake.nix                           # Nix development environment
-├── flake.lock                          # Nix lock file
+├── pyproject.toml                      # Python project configuration (deps mirror process.py header)
 ├── sd_watcher.py                       # SD card watcher utility
-├── .env                                # Environment variables
-├── .envrc                              # Directory environment setup
+├── .env                                # Environment variables (used by sd_watcher only)
+├── .envrc                              # Directory environment setup (uv + direnv; Nix removed)
 ├── .gitignore                          # Git ignore patterns
+├── .github/workflows/ci.yml            # CI: uv sync + pytest on push/PR
+├── tests/                              # Automated tests
+│   ├── conftest.py                     # Path setup so packages import under pytest
+│   ├── test_imports.py                 # Import smoke test (module-graph guardrail)
+│   ├── test_functional_utils.py        # Video-selection pure-function tests
+│   └── test_config.py                  # CLI-argument parsing / default-value tests
+├── docs/superpowers/specs/             # Design specs (recovery & updates)
 ├── core/                               # Core architecture
 │   ├── __init__.py
 │   ├── batch_processor.py              # Batch processing orchestration
@@ -39,7 +47,6 @@ wildcams/
 │   ├── __init__.py
 │   ├── constants.py                    # ML-specific constants
 │   ├── ensemble_wrapper.py             # ML model ensemble coordination
-│   ├── feature_extractor.py           # Feature extraction for clustering
 │   ├── model_manager.py               # Model loading and caching
 │   ├── postprocessing.py              # Detection post-processing
 │   ├── preprocessing.py               # Input preprocessing

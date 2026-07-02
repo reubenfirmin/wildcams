@@ -74,11 +74,6 @@ class ProcessingConfig:
     low_confidence_ratio_threshold: float
     low_confidence_cutoff: float
     
-    # Clustering parameters
-    enable_clustering: bool
-    clustering_eps: float
-    min_samples: int
-    
     # Temporal continuity
     confidence_bridge_threshold: float
     
@@ -90,3 +85,25 @@ class ProcessingConfig:
     bioclip_top_k: int
     bioclip_threshold: float
     deepfaune_threshold: float
+
+    # Step 3 composite-score tuning (defaults preserve historical hardcoded behavior)
+    default_fps: float
+    consensus_boost_per_detection: float
+    composite_temporal_multiplier_cap: float
+    composite_consensus_boost_per_model: float
+    composite_motion_multiplier_base: float
+    composite_motion_multiplier_span: float
+    composite_duration_bonus_base: float
+    composite_duration_bonus_cap: float
+    composite_duration_bonus_divisor: float
+
+    # Step 3 temporal continuity check (opt-in; default off preserves prior always-pass behavior)
+    enable_temporal_continuity_check: bool
+    temporal_continuity_max_gap_seconds: float
+
+    # Step 3 per-frame pass gate. A frame "passes" for a track when that single frame's
+    # summed detection confidence clears this. Historically this reused confidence_threshold
+    # (the whole-track budget), making the per-frame gate the binding constraint on
+    # low-confidence footage. Defaults to confidence_threshold to preserve prior behavior;
+    # lower it to admit tracks whose confidence is spread across frames rather than concentrated.
+    frame_pass_confidence_threshold: float

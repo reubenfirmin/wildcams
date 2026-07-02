@@ -17,6 +17,10 @@ logs/
 
 # Analysis output
 videos/analysis/
+debug_crops/
+
+# AI-workflow planning artifacts (design records live in knowledge/experiments.md)
+docs/superpowers/
 
 # Model cache
 models_cache/

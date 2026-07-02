@@ -108,21 +108,51 @@ class SDCardWatcher:
         except subprocess.CalledProcessError:
             return []
 
-    def mount_device_userspace(self, device: str) -> Optional[str]:
-        """Mount device using udisks2 (no sudo required)."""
-        try:
-            result = subprocess.run(['udisksctl', 'mount', '-b', device], 
-                                  capture_output=True, text=True, check=True)
-            # Parse mount point from output like "Mounted /dev/sdc1 at /media/user/LABEL"
-            for line in result.stdout.split('\n'):
-                if 'Mounted' in line and 'at' in line:
-                    mount_point = line.split(' at ')[-1].strip()
-                    logger.info(f"✅ Mounted {device} at {mount_point}")
-                    return mount_point
-            return None
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"❌ Failed to mount {device}: {e.stderr}")
-            return None
+    def mount_device_userspace(self, device: str, max_retries: int = 5, retry_delay: float = 0.5) -> Optional[str]:
+        """Mount device using udisks2 (no sudo required).
+
+        Retries if udisks hasn't registered the device yet, with exponential backoff.
+        """
+        for attempt in range(max_retries):
+            try:
+                result = subprocess.run(['udisksctl', 'mount', '-b', device],
+                                      capture_output=True, text=True, check=True)
+                # Parse mount point from output like "Mounted /dev/sdc1 at /media/user/LABEL"
+                for line in result.stdout.split('\n'):
+                    if 'Mounted' in line and 'at' in line:
+                        mount_point = line.split(' at ')[-1].strip()
+                        logger.info(f"✅ Mounted {device} at {mount_point}")
+                        return mount_point
+                return None
+            except subprocess.CalledProcessError as e:
+                stderr = e.stderr.strip() if e.stderr else ""
+
+                # Transient errors that warrant retry
+                if "Error looking up object" in stderr:
+                    if attempt < max_retries - 1:
+                        logger.debug(f"🔄 udisks not ready for {device}, retrying in {retry_delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 1.5  # Exponential backoff
+                        continue
+                    else:
+                        logger.warning(f"❌ udisks never registered {device} after {max_retries} attempts")
+                        return None
+
+                # Permanent errors we can ignore
+                if any(msg in stderr for msg in [
+                    "is not a mountable filesystem",
+                    "Already mounted",
+                    "already mounted",
+                    "Device is already mounted"
+                ]):
+                    logger.debug(f"⏭️  Skipping {device}: {stderr}")
+                    return None
+
+                # Other errors
+                logger.warning(f"❌ Failed to mount {device}: {stderr}")
+                return None
+
+        return None
 
     def unmount_device_userspace(self, device: str) -> bool:
         """Unmount device using udisks2 (no sudo required)."""
@@ -303,11 +333,12 @@ class SDCardWatcher:
 
     def process_unmounted_device(self, device: str):
         """Process an unmounted removable device by mounting it first."""
-        logger.info(f"🔍 Found unmounted removable device: {device}")
-        
-        # Try to mount it
+        logger.debug(f"🔍 Found unmounted removable device: {device}")
+
+        # Try to mount it (will retry if udisks isn't ready yet)
         mount_point = self.mount_device_userspace(device)
         if not mount_point:
+            # Couldn't mount - might be dirty, already mounted elsewhere, or not a filesystem
             return
         
         try:

@@ -10,10 +10,11 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 * Test full video set (20 videos) with current pipeline to validate performance
 
 ## Current Status
-- **3-Step Pipeline**: Motion detection → Camera handling filter → Full-frame ensemble analysis
+- **4-Step Pipeline**: Motion detection → Camera handling filter → Full-frame ensemble analysis → Animal classification (BioCLIP + DeepFaune, enabled by default; --skip-animal-classification for the 3-step flow)
 - **Camera Handling Detection**: Fixed inverted logic (spatial dispersion + motion sparsity)
 - **Spatial Overlap Validation**: Full-frame detections must correlate with motion regions
-- **Default Ensemble**: yolo12x, yolo12m, MDV6-yolov10-e, rtdetr-l
+- **Default Detection Ensemble**: yolo12x, yolo12m, MDV6-yolov10-e, rtdetr-l
+- **Model currency**: See knowledge/models.md for the 2026 model-landscape assessment (DeepFaune is Europe-only; SpeciesNet + CRI geofencing is the top recommended addition for Costa Rica).
 
 ## Ground Truth Reference
 - **Videos 7,8,9,11,12**: True positives (should detect animals)
@@ -28,11 +29,14 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 # Full processing with current defaults
 ./process.py
 
-# Camera handling detection tuning
-./process.py --composite-motion-threshold 8.0
+# Camera handling detection tuning (default 0.5)
+./process.py --composite-motion-threshold 1.0
 
 # Motion sensitivity tuning
 ./process.py --min-motion-area 300 --motion-var-threshold 32
+
+# Run the automated test suite (import smoke + unit tests)
+uv run pytest -q
 ```
 
 ## Document Index
@@ -47,7 +51,7 @@ Automated wildlife video processing system for Costa Rican jungle camera footage
 
 ## Critical Rules
 - **NO hardcoded constants**: All parameters must be CLI configurable
-- **User will always perform tests**: Provide test commands (using process command from flake) for user to test with
+- **User will always perform tests**: Provide test commands (`./process.py ...`, run via uv) for user to test with
 - **New experiments should change only one or two parameters**: Follow scientific process and do not change multiple parameters at once
 - **Document experiments**: Log all parameter changes in experiments.md
 - **Consult procedures.md**: Follow standard procedures for common tasks

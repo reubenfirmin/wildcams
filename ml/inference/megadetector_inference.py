@@ -5,11 +5,12 @@ Handles MegaDetector v6 model variants.
 
 import cv2
 import logging
-from typing import List, Dict
+from typing import List
 import numpy as np
 
 # Import constants
 from ..constants import MODEL_DETECTION_THRESHOLD
+from core.data_types import Detection, BoundingBox
 
 logger = logging.getLogger('wildcams')
 
@@ -26,7 +27,7 @@ class MegaDetectorInferenceEngine:
         self.model_manager = model_manager
     
     def run_detection(self, model_name: str, frame: np.ndarray, config, full_frame: np.ndarray = None, 
-                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Dict]:
+                     timestamp_seconds: float = 0.0, frame_idx: int = 0) -> List[Detection]:
         """
         Run MegaDetector detection on a frame.
         
@@ -114,16 +115,14 @@ class MegaDetectorInferenceEngine:
                         y2 * h   # y2
                     ]
                     
-                    detection_dict = {
-                        'confidence': float(confidence),
-                        'bbox': pixel_bbox,
-                        'source': model_name,
-                        'class': category,
-                        'megadetector_category': category,
-                        'timestamp': timestamp_seconds,
-                        'frame_idx': frame_idx
-                    }
-                    detections.append(detection_dict)
+                    detections.append(Detection(
+                        confidence=float(confidence),
+                        bbox=BoundingBox(pixel_bbox[0], pixel_bbox[1], pixel_bbox[2], pixel_bbox[3]),
+                        source=model_name,
+                        class_name=category,
+                        timestamp=timestamp_seconds,
+                        frame_idx=frame_idx,
+                    ))
         
         return detections
     
@@ -151,23 +150,23 @@ class MegaDetectorInferenceEngine:
         """Check if this inference engine supports full-frame detection."""
         return True
     
-    def check_extended_class_correlations(self, detections: List[Dict], yolo_detections: List[Dict], timestamp: float) -> None:
+    def check_extended_class_correlations(self, detections: List[Detection], yolo_detections: List[Detection], timestamp: float) -> None:
         """Check for correlations between MegaDetector extended classes and YOLO detections."""
-        megadetector_extended = [d for d in detections if d.get('source', '').startswith('MDV6-') and d.get('raw_class_id')]
+        megadetector_extended = [d for d in detections if d.source.startswith('MDV6-') and getattr(d, 'raw_class_id', None)]
         
         if not megadetector_extended or not yolo_detections:
             return
             
         # Check for bbox overlaps (IoU > 0.3 indicates correlation)
         for md_det in megadetector_extended:
-            md_bbox = md_det['bbox']
-            md_class = md_det.get('class', 'unknown')
-            md_conf = md_det['confidence']
-            
+            md_bbox = [md_det.bbox.x1, md_det.bbox.y1, md_det.bbox.x2, md_det.bbox.y2]
+            md_class = md_det.class_name
+            md_conf = md_det.confidence
+
             for yolo_det in yolo_detections:
-                yolo_bbox = yolo_det['bbox']
-                yolo_source = yolo_det['source']
-                yolo_conf = yolo_det['confidence']
+                yolo_bbox = [yolo_det.bbox.x1, yolo_det.bbox.y1, yolo_det.bbox.x2, yolo_det.bbox.y2]
+                yolo_source = yolo_det.source
+                yolo_conf = yolo_det.confidence
                 
                 iou = self._calculate_iou(md_bbox, yolo_bbox)
                 if iou > 0.3:  # Significant overlap
