@@ -9,7 +9,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "opencv-python>=4.8.0",
     "ultralytics>=8.0.0",
-    "scikit-learn>=1.3.0",
     "numpy>=1.24.0",
     "pillow>=10.0.0",
     "tqdm>=4.66.0",
@@ -25,6 +24,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
 ]
 
 [project.scripts]
@@ -32,6 +33,23 @@ sd-watcher = "sd_watcher:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import-sort, UP pyupgrade (modernizes typing).
+select = ["E", "F", "I", "UP", "W"]
+# Long lines are mostly log strings; not worth reflowing.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+# Third-party ML libs (torch, cv2, ultralytics, ...) ship no stubs.
+ignore_missing_imports = true
+# The whole first-party tree type-checks clean.
+files = ["config", "core", "ml", "motion", "pipeline", "video_io", "process.py"]
 
 # This project is CPU-only ("CPU feasible" per the README). Pin torch/torchvision to the
 # CPU wheel index so `uv sync` and CI don't pull the multi-GB CUDA build.

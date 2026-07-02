@@ -3,23 +3,23 @@ Postprocessing Pipeline for ML Detection Ensemble.
 Handles NMS, filtering, and coordinate transformations.
 """
 
-import torch
-import numpy as np
 import logging
 from dataclasses import replace
-from typing import List, Tuple
 
-from core.data_types import Detection, BoundingBox
+import torch
 
-logger = logging.getLogger('wildcams')
+from core.data_types import BoundingBox, Detection
+
+logger = logging.getLogger("wildcams")
+
 
 class PostprocessingPipeline:
     """Handles all postprocessing operations for ML detection."""
-    
+
     def __init__(self):
         pass
-    
-    def apply_advanced_nms(self, detections: List[Detection], iou_threshold: float = 0.5) -> List[Detection]:
+
+    def apply_advanced_nms(self, detections: list[Detection], iou_threshold: float = 0.5) -> list[Detection]:
         """
         Apply advanced Non-Maximum Suppression across ensemble.
 
@@ -45,24 +45,26 @@ class PostprocessingPipeline:
 
         if not boxes:
             return []
-        
+
         # Convert to tensors
         boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
         scores_tensor = torch.tensor(scores, dtype=torch.float32)
-        
+
         # Apply NMS
         keep_indices = ops.nms(boxes_tensor, scores_tensor, iou_threshold)
-        
+
         # Return filtered detections
         filtered_detections = []
         for idx in keep_indices:
             filtered_detections.append(detections[idx.item()])
-        
-        logger.info(f"🧹 ADVANCED NMS: {len(detections)} → {len(filtered_detections)} detections (removed {len(detections) - len(filtered_detections)} duplicates)")
-        
+
+        logger.info(
+            f"🧹 ADVANCED NMS: {len(detections)} → {len(filtered_detections)} detections (removed {len(detections) - len(filtered_detections)} duplicates)"
+        )
+
         return filtered_detections
-    
-    def filter_by_confidence(self, detections: List[Detection], threshold: float) -> List[Detection]:
+
+    def filter_by_confidence(self, detections: list[Detection], threshold: float) -> list[Detection]:
         """
         Filter detections by confidence threshold.
 
@@ -74,13 +76,17 @@ class PostprocessingPipeline:
             Filtered detections
         """
         filtered = [det for det in detections if det.confidence >= threshold]
-        
+
         if len(filtered) != len(detections):
-            logger.debug(f"Confidence filtering: {len(detections)} → {len(filtered)} detections (threshold: {threshold})")
-        
+            logger.debug(
+                f"Confidence filtering: {len(detections)} → {len(filtered)} detections (threshold: {threshold})"
+            )
+
         return filtered
-    
-    def filter_by_area(self, detections: List[Detection], min_area: int = 100, max_area: int = None) -> List[Detection]:
+
+    def filter_by_area(
+        self, detections: list[Detection], min_area: int = 100, max_area: int | None = None
+    ) -> list[Detection]:
         """
         Filter detections by bounding box area.
 
@@ -100,14 +106,17 @@ class PostprocessingPipeline:
             if area >= min_area:
                 if max_area is None or area <= max_area:
                     filtered.append(det)
-        
+
         if len(filtered) != len(detections):
-            logger.debug(f"Area filtering: {len(detections)} → {len(filtered)} detections (min: {min_area}, max: {max_area})")
-        
+            logger.debug(
+                f"Area filtering: {len(detections)} → {len(filtered)} detections (min: {min_area}, max: {max_area})"
+            )
+
         return filtered
-    
-    def convert_coordinates(self, detections: List[Detection], source_size: Tuple[int, int],
-                           target_size: Tuple[int, int]) -> List[Detection]:
+
+    def convert_coordinates(
+        self, detections: list[Detection], source_size: tuple[int, int], target_size: tuple[int, int]
+    ) -> list[Detection]:
         """
         Convert bounding box coordinates between different image sizes.
 
@@ -140,7 +149,7 @@ class PostprocessingPipeline:
 
         return converted
 
-    def normalize_coordinates(self, detections: List[Detection], image_size: Tuple[int, int]) -> List[Detection]:
+    def normalize_coordinates(self, detections: list[Detection], image_size: tuple[int, int]) -> list[Detection]:
         """
         Normalize bounding box coordinates to [0, 1] range.
 
@@ -165,7 +174,7 @@ class PostprocessingPipeline:
 
         return normalized
 
-    def denormalize_coordinates(self, detections: List[Detection], image_size: Tuple[int, int]) -> List[Detection]:
+    def denormalize_coordinates(self, detections: list[Detection], image_size: tuple[int, int]) -> list[Detection]:
         """
         Denormalize bounding box coordinates from [0, 1] range to pixel coordinates.
 
@@ -186,7 +195,7 @@ class PostprocessingPipeline:
 
         return denormalized
 
-    def clip_to_image(self, detections: List[Detection], image_size: Tuple[int, int]) -> List[Detection]:
+    def clip_to_image(self, detections: list[Detection], image_size: tuple[int, int]) -> list[Detection]:
         """
         Clip bounding boxes to image boundaries.
 
@@ -215,31 +224,31 @@ class PostprocessingPipeline:
 
         return clipped
 
-    def merge_detections(self, detection_groups: List[List[Detection]]) -> List[Detection]:
+    def merge_detections(self, detection_groups: list[list[Detection]]) -> list[Detection]:
         """
         Merge detections from multiple sources (e.g., TTA, multi-scale).
-        
+
         Args:
             detection_groups: List of detection lists to merge
-            
+
         Returns:
             Merged detections
         """
         merged = []
-        
+
         for group in detection_groups:
             merged.extend(group)
-        
+
         return merged
-    
-    def calculate_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
+
+    def calculate_iou(self, bbox1: list[float], bbox2: list[float]) -> float:
         """
         Calculate Intersection over Union (IoU) between two bounding boxes.
-        
+
         Args:
             bbox1: First bounding box [x1, y1, x2, y2]
             bbox2: Second bounding box [x1, y1, x2, y2]
-            
+
         Returns:
             IoU value between 0 and 1
         """
@@ -248,21 +257,21 @@ class PostprocessingPipeline:
         y1 = max(bbox1[1], bbox2[1])
         x2 = min(bbox1[2], bbox2[2])
         y2 = min(bbox1[3], bbox2[3])
-        
+
         # Check if there's an intersection
         if x2 <= x1 or y2 <= y1:
             return 0.0
-        
+
         # Calculate areas
         intersection_area = (x2 - x1) * (y2 - y1)
         bbox1_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
         bbox2_area = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
-        
+
         # Calculate union
         union_area = bbox1_area + bbox2_area - intersection_area
-        
+
         # Avoid division by zero
         if union_area <= 0:
             return 0.0
-        
+
         return intersection_area / union_area

@@ -1,23 +1,27 @@
-"""Characterization tests that pin the scoring core's current behavior.
+"""Characterization tests that pin the scoring core's behavior.
 
-These assert the CURRENT outputs of the composite-score and IoU math so the
-dict->dataclass migration can prove it changed nothing. If one of these fails
-during the migration, the refactor altered the math.
+They assert the exact outputs of the composite-score and IoU math so refactors
+(the dict->dataclass migration, the split into pipeline/scoring.py) can prove
+they changed nothing. A failure here means the math moved.
 """
+
+from types import SimpleNamespace
 
 import pytest
 
 from config import ConfigurationManager
-from core.data_types import Detection, BoundingBox, ScoredDetection
-from pipeline.fullframe_validator import FullFrameValidator
+from core.data_types import BoundingBox, Detection, ScoredDetection
+from pipeline.scoring import calculate_bbox_overlap, calculate_composite_score
 
 
 def _scored(boosted_confidence, source, motion_overlap):
     """Build a ScoredDetection carrying only the fields composite scoring reads."""
     return ScoredDetection(
         detection=Detection(
-            confidence=boosted_confidence, bbox=BoundingBox(0, 0, 1, 1),
-            source=source, class_name="animal",
+            confidence=boosted_confidence,
+            bbox=BoundingBox(0, 0, 1, 1),
+            source=source,
+            class_name="animal",
         ),
         boosted_confidence=boosted_confidence,
         motion_overlap=motion_overlap,
@@ -32,26 +36,21 @@ def config():
     return m.get_processing_config()
 
 
-@pytest.fixture
-def validator():
-    return FullFrameValidator(ml_ensemble=None)
-
-
-def test_bbox_overlap_iou(validator):
+def test_bbox_overlap_iou():
     # Identical boxes -> IoU 1.0; half-overlapping -> 1/3; disjoint -> 0.0
-    assert validator._calculate_bbox_overlap([0, 0, 10, 10], [0, 0, 10, 10]) == pytest.approx(1.0)
-    assert validator._calculate_bbox_overlap([0, 0, 10, 10], [5, 0, 15, 10]) == pytest.approx(1 / 3, abs=1e-6)
-    assert validator._calculate_bbox_overlap([0, 0, 10, 10], [20, 20, 30, 30]) == 0.0
+    assert calculate_bbox_overlap([0, 0, 10, 10], [0, 0, 10, 10]) == pytest.approx(1.0)
+    assert calculate_bbox_overlap([0, 0, 10, 10], [5, 0, 15, 10]) == pytest.approx(1 / 3, abs=1e-6)
+    assert calculate_bbox_overlap([0, 0, 10, 10], [20, 20, 30, 30]) == 0.0
 
 
-def test_composite_score_known_input(validator, config):
-    track = {'duration_seconds': 4.0}
+def test_composite_score_known_input(config):
+    track = SimpleNamespace(duration_seconds=4.0)  # scoring only reads duration_seconds
     detections = [
-        _scored(boosted_confidence=0.4, source='yolo12x', motion_overlap=0.2),
-        _scored(boosted_confidence=0.3, source='rtdetr-l', motion_overlap=0.4),
+        _scored(boosted_confidence=0.4, source="yolo12x", motion_overlap=0.2),
+        _scored(boosted_confidence=0.3, source="rtdetr-l", motion_overlap=0.4),
     ]
     track_frames = [10, 20, 30, 40, 50]
-    result = validator._calculate_composite_score(track, detections, track_frames, fps=30.0, config=config)
+    result = calculate_composite_score(track, detections, track_frames, fps=30.0, config=config)
 
     assert result.base_score == pytest.approx(0.7)
     assert result.temporal_density == pytest.approx(0.4)
@@ -65,8 +64,6 @@ def test_composite_score_known_input(validator, config):
     assert result.final_score == pytest.approx(expected)
 
 
-def test_composite_score_empty_detections(validator, config):
-    result = validator._calculate_composite_score(
-        {'duration_seconds': 1.0}, [], [1, 2], fps=30.0, config=config
-    )
+def test_composite_score_empty_detections(config):
+    result = calculate_composite_score(SimpleNamespace(duration_seconds=1.0), [], [1, 2], fps=30.0, config=config)
     assert result.final_score == 0.0

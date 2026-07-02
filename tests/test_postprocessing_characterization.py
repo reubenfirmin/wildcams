@@ -8,7 +8,7 @@ asserted OUTPUTS (which detections survive, the IoU value) must stay identical.
 
 import pytest
 
-from core.data_types import Detection, BoundingBox
+from core.data_types import BoundingBox, Detection
 from ml.postprocessing import PostprocessingPipeline
 
 
@@ -19,7 +19,10 @@ def pp():
 
 def _det(bbox, confidence, source="yolo12x"):
     return Detection(
-        confidence=confidence, bbox=BoundingBox(*bbox), source=source, class_name="animal",
+        confidence=confidence,
+        bbox=BoundingBox(*bbox),
+        source=source,
+        class_name="animal",
     )
 
 
@@ -32,7 +35,7 @@ def test_calculate_iou(pp):
 
 def test_filter_by_area(pp):
     dets = [
-        _det([0, 0, 5, 5], 0.9),      # area 25
+        _det([0, 0, 5, 5], 0.9),  # area 25
         _det([0, 0, 100, 100], 0.9),  # area 10000
     ]
     kept = pp.filter_by_area(dets, min_area=100, max_area=None)

@@ -26,7 +26,8 @@ wildcams/
 │   ├── constants.py                    # All system constants
 │   ├── data_types.py                   # All typed data structures
 │   ├── functional_utils.py             # Pure functional utilities
-│   ├── session_manager.py              # Session tracking and logging
+│   ├── session_manager.py              # Session state + video recording
+│   ├── session_reporter.py             # Session summary/logging (split from session_manager)
 │   └── wildlife_processor.py           # Individual video processing
 ├── config/                             # Configuration system
 │   ├── __init__.py
@@ -35,7 +36,8 @@ wildcams/
 ├── pipeline/                           # Processing pipeline
 │   ├── __init__.py
 │   ├── camera_handling_filter.py       # Camera handling detection logic
-│   ├── fullframe_validator.py          # Full-frame validation logic
+│   ├── fullframe_validator.py          # Full-frame validation orchestration
+│   ├── scoring.py                      # Pure scoring functions (split from fullframe_validator)
 │   ├── step_interface_v2.py            # Pipeline interfaces and orchestrator
 │   └── steps_v2/                       # Current step implementations
 │       ├── __init__.py

@@ -5,13 +5,12 @@ Pure functions for video-file collection and filtering, extracted from the
 core classes to keep them side-effect-free and unit-testable.
 """
 
-from typing import List, Union, Tuple, Set
 from pathlib import Path
 
 from core.constants import VIDEO_EXTENSIONS
 
 
-def collect_video_files(video_dir: Path, extensions: Set[str] = None) -> List[Path]:
+def collect_video_files(video_dir: Path, extensions: set[str] | None = None) -> list[Path]:
     """
     Collect video files from a directory.
 
@@ -25,17 +24,14 @@ def collect_video_files(video_dir: Path, extensions: Set[str] = None) -> List[Pa
     if extensions is None:
         extensions = VIDEO_EXTENSIONS
 
-    all_videos = []
+    all_videos: list[Path] = []
     for ext in extensions:
-        all_videos.extend(video_dir.glob(f'*{ext}'))
+        all_videos.extend(video_dir.glob(f"*{ext}"))
 
     return sorted(all_videos, key=lambda p: p.name)
 
 
-def filter_videos_by_criteria(
-    all_videos: List[Path],
-    video_filter: List[Union[int, str]]
-) -> List[Path]:
+def filter_videos_by_criteria(all_videos: list[Path], video_filter: list[int | str]) -> list[Path]:
     """
     Filter videos by 1-based indices or name substrings.
 
@@ -59,10 +55,7 @@ def filter_videos_by_criteria(
     return filtered_videos
 
 
-def validate_video_filter(
-    video_filter: List[Union[int, str]],
-    available_videos: List[Path]
-) -> Tuple[List[Path], List[str]]:
+def validate_video_filter(video_filter: list[int | str], available_videos: list[Path]) -> tuple[list[Path], list[str]]:
     """
     Apply a video filter and collect warnings for entries that matched nothing.
 

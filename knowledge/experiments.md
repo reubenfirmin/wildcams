@@ -676,3 +676,57 @@ filtering, and coordinate transforms; all 95 tests pass with identical asserted 
 End-to-end proof: re-running co1 (tuned thresholds) post-migration produced byte-identical Step-3
 scores (track_1 ensemble=1.491/composite=2.155; track_6 ensemble=1.430/composite=2.061) and the
 same VIDEO SUCCESS outcome as pre-migration. Behavior-neutral, confirmed.
+
+## Lint/format/type gates + cleanup: 2026-07-02
+
+Added ruff (lint+format) and mypy to the dev deps and CI, and let them drive a cleanup pass.
+- **ruff** (`select = E,F,I,UP,W`): fixed ~1665 issues automatically (trailing/blank-line whitespace,
+  `typing.List/Dict/Optional` -> builtin `list`/`dict`/`X | None` on 3.13, import sorting, unused
+  imports, redundant f-strings) plus manual fixes (unused locals, a bare `except`, E402 import
+  ordering). All source now passes `ruff check` + `ruff format --check`.
+- **Circular import fixed**: ruff's import-sort exposed a latent `config <-> core` cycle (config
+  package re-export order was load-bearing). Fixed properly by importing `ProcessingConfig` from its
+  submodule (`config.processing_config`) in the modules that closed the cycle — order-independent.
+- **mypy** (scoped to `config` + `core/data_types.py`, `follow_imports=silent` as a green baseline):
+  found and fixed a `list[int|str]` annotation and removed dead `ConfigurationUpdate` +
+  `update_config` (whose `to_dict()` call would have failed). Widen the mypy `files` list as more
+  modules are annotated. (A broader mypy run surfaces ~109 findings across the untyped tree,
+  including a real `ValidationResult.validated_sequences` mislabel in animal_classification_step —
+  future work.)
+- Dropped now-unused `scikit-learn` (clustering) from pyproject + the process.py PEP723 header.
+
+CI now gates on: ruff check, ruff format --check, mypy, pytest. All green; 95 tests pass.
+
+## Canonical-Python cleanup: lint/type gates + module splits: 2026-07-02
+
+Cleaned up the codebase toward modern canonical Python. All changes behavior-neutral.
+
+- **mypy to zero across the whole tree** (was 108 errors): fixed via annotations + a few design
+  corrections (VideoAnalysis gained real `_step3_data`/`_step4_data`/`_is_failure` fields;
+  AnimalClassificationStep retyped to FullFrameValidationResult; PipelineStep's over-rigid
+  `process` abstractmethod signature dropped). mypy now covers config/core/ml/motion/pipeline/
+  video_io/process.py and is a CI gate (`follow_imports` normal, `ignore_missing_imports=true`).
+- **Dead/broken code removed** (surfaced by mypy): a broken `clear_processed_status` (called a
+  non-existent method), 7 dead `ensemble_wrapper` backward-compat passthroughs (one with a broken
+  signature), an orchestrator hack that hand-built a fake `ValidationResult` for Step 4 (now passes
+  the real FullFrameValidationResult), and unused `SessionSummary`/`TimingStatistics` dataclasses.
+- **Big files split:**
+  - `pipeline/fullframe_validator.py` 669 -> 569; pure scoring extracted to `pipeline/scoring.py`
+    (calculate_composite_score / calculate_bbox_overlap / check_temporal_continuity).
+  - The extended-track dict-holdout is now typed (`TrackFrameBBox`/`BBoxTrack`/`ExtendedTrack`) —
+    the dict->dataclass migration is fully finished.
+  - `core/session_manager.py` 601 -> 287; reporting/logging extracted to `core/session_reporter.py`.
+- CI gates: ruff check + ruff format --check + mypy + pytest. 97 tests pass.
+
+Behavior verified: co1 (tuned) produced byte-identical Step-3 scores after each phase, and a full
+28-video end-to-end run reproduced the pre-refactor result (see next entry for the diff).
+
+## Full 28-video refactor validation: IDENTICAL: 2026-07-02
+
+Ran the full 28-video set (tuned thresholds) after all cleanup phases (mypy-to-zero, dead-code
+removal, fullframe_validator + session_manager splits, extended-track typing) and diffed against
+the pre-refactor tuned baseline:
+- Detected: 20/28 (unchanged).
+- Success set: byte-identical (diff empty).
+- Every validated TRACK ensemble/composite score: byte-identical (diff empty).
+Conclusion: the whole refactor is behavior-neutral end-to-end, not just on unit tests.

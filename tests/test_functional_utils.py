@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from core.functional_utils import (
     collect_video_files,
     filter_videos_by_criteria,

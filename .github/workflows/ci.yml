@@ -24,5 +24,14 @@ jobs:
         # CPU torch is pinned via [tool.uv.sources] in pyproject.toml.
         run: uv sync --python 3.13 --extra dev
 
+      - name: Lint (ruff)
+        run: uv run --python 3.13 ruff check .
+
+      - name: Format check (ruff)
+        run: uv run --python 3.13 ruff format --check .
+
+      - name: Type check (mypy)
+        run: uv run --python 3.13 mypy
+
       - name: Run tests
         run: uv run --python 3.13 pytest -q

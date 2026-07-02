@@ -1,9 +1,6 @@
 """Configuration management package for wildlife video processing."""
 
-from .processing_config import ProcessingConfig
 from .configuration_manager import ConfigurationManager
+from .processing_config import ProcessingConfig
 
-__all__ = [
-    'ProcessingConfig',
-    'ConfigurationManager'
-]
+__all__ = ["ProcessingConfig", "ConfigurationManager"]
