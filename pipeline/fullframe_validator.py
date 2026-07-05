@@ -1,19 +1,20 @@
 """Full-frame validation for wildlife video processing."""
 
+import dataclasses
 import logging
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 
 from core.data_types import (
-    BBoxTrack,
+    BoundingBox,
     CompositeScore,
     Detection,
     ExtendedTrack,
     MotionTrack,
     ScoredDetection,
     Track,
-    TrackFrameBBox,
     ValidationSequence,
 )
 from pipeline.scoring import (
@@ -23,6 +24,14 @@ from pipeline.scoring import (
 )
 
 logger = logging.getLogger("wildcams")
+
+
+class _Candidate(NamedTuple):
+    """A model detection that spatially overlaps a track's motion region."""
+
+    detection: Detection
+    overlap: float
+    bbox_str: str
 
 
 class FullFrameValidator:
@@ -144,77 +153,27 @@ class FullFrameValidator:
                 first_known_position = [100, 100, 200, 200]
                 last_known_position = first_known_position[:]
 
-            # Build full video coverage detections
-            full_detections: list[TrackFrameBBox] = []
             motion_start_frame = min(motion_frames)
             motion_end_frame = max(motion_frames)
 
-            # Backfill: frame 0 to motion_start-1
-            for frame_idx in range(0, motion_start_frame):
-                full_detections.append(
-                    TrackFrameBBox(
-                        frame=frame_idx,
-                        bbox=first_known_position.copy(),
-                        timestamp=frame_idx / fps,
-                        motion_detected=False,
-                        fill_type="backfill",
-                    )
+            # Bbox for each actual motion frame (first region wins on a duplicate frame_idx,
+            # matching the previous first-match-then-break behavior). Coverage for backfill /
+            # forward-fill frames is computed on demand in _get_track_bbox_for_frame rather
+            # than materializing a TrackFrameBBox for every frame of the video.
+            motion_bboxes: dict[int, list[float]] = {}
+            for region in motion_regions:
+                motion_bboxes.setdefault(
+                    region.frame_idx,
+                    [region.bbox.x1, region.bbox.y1, region.bbox.x2, region.bbox.y2],
                 )
 
-            # Motion frames: use actual motion regions
-            for i, frame_idx in enumerate(motion_frames):
-                # Find the motion region that corresponds to this frame
-                matching_region = None
-                for region in motion_regions:
-                    if region.frame_idx == frame_idx:
-                        matching_region = region
-                        break
-
-                if matching_region:
-                    bbox = [
-                        matching_region.bbox.x1,
-                        matching_region.bbox.y1,
-                        matching_region.bbox.x2,
-                        matching_region.bbox.y2,
-                    ]
-                else:
-                    bbox = first_known_position.copy()
-
-                full_detections.append(
-                    TrackFrameBBox(
-                        frame=frame_idx,
-                        bbox=bbox,
-                        timestamp=frame_idx / fps,
-                        motion_detected=True,
-                        fill_type="motion",
-                    )
-                )
-
-            # Forward-fill: motion_end+1 to video end
-            for frame_idx in range(motion_end_frame + 1, total_frames):
-                full_detections.append(
-                    TrackFrameBBox(
-                        frame=frame_idx,
-                        bbox=last_known_position.copy(),
-                        timestamp=frame_idx / fps,
-                        motion_detected=False,
-                        fill_type="forward_fill",
-                    )
-                )
-
-            # Sort detections by frame
-            full_detections.sort(key=lambda x: x.frame)
-
-            # Create extended track
             extended_track = ExtendedTrack(
                 track_id=track_id,
-                bbox_track=BBoxTrack(
-                    detections=full_detections,
-                    start_frame=0,
-                    end_frame=total_frames - 1,
-                    motion_start_frame=motion_start_frame,
-                    motion_end_frame=motion_end_frame,
-                ),
+                motion_start_frame=motion_start_frame,
+                motion_end_frame=motion_end_frame,
+                first_known_position=first_known_position,
+                last_known_position=last_known_position,
+                motion_bboxes=motion_bboxes,
                 duration_seconds=motion_track.duration_seconds,
                 motion_frames=len(motion_frames),
                 original_motion_track=motion_track,
@@ -268,38 +227,55 @@ class FullFrameValidator:
 
         # Run each model against the frame (original nested loop structure)
         for model_name in config.ensemble_models:
-            model_detections = self.ml_ensemble.run_single_model_detection(
-                model_name,
-                frame,
-                config,
-                timestamp_seconds=timestamp,
-                frame_idx=frame_idx,
-                full_frame=frame,
-                accepted_rtdetr_overlap=config.spatial_overlap_threshold,
-            )
-
-            # Track model contributions
-            if model_detections:
-                self._model_contributions[model_name]["total_detections"] += len(model_detections)
-                max_conf = max(det.confidence for det in model_detections)
-                self._model_contributions[model_name]["max_confidence"] = max(
-                    self._model_contributions[model_name]["max_confidence"], max_conf
+            # Full-frame mode: detect once on the whole frame and share across all tracks.
+            # Crop mode (POC): detection runs per-track on the motion-region crop, below.
+            full_frame_detections = None
+            if not config.enable_crop_detection:
+                full_frame_detections = self.ml_ensemble.run_single_model_detection(
+                    model_name,
+                    frame,
+                    config,
+                    timestamp_seconds=timestamp,
+                    frame_idx=frame_idx,
+                    full_frame=frame,
+                    accepted_rtdetr_overlap=config.spatial_overlap_threshold,
                 )
+                self._record_model_contribution(model_name, full_frame_detections)
 
             # For each track, determine if there was an overlap above the threshold
             for track in extended_tracks:
                 track_id = track.track_id
                 track_bbox = self._get_track_bbox_for_frame(track, frame_idx)
+                # "motion" = this is the track's own active frame (explicit); backfill/
+                # forward_fill = a frame the track is not active in (implicit).
+                fill_type = self._get_track_fill_type(track, frame_idx) if track_bbox is not None else "none"
+
+                # Detection source for this (model, track): the shared full-frame set, or a
+                # per-track crop of the motion region (POC). A crop detection is inherently
+                # inside the motion region, so it cannot produce a no_overlap miss.
+                model_detections: list[Detection] | None
+                if config.enable_crop_detection:
+                    # Only crop-detect where the track is actually active. Implicit frames
+                    # would crop a stale static position on a frame the track isn't in
+                    # (~90% of per-track evaluations, ~no signal), so skip the inference.
+                    if track_bbox is not None and fill_type == "motion":
+                        model_detections = self._detect_on_crop(
+                            model_name, frame, track_bbox, config, timestamp, frame_idx
+                        )
+                        self._record_model_contribution(model_name, model_detections)
+                    else:
+                        model_detections = None
+                else:
+                    model_detections = full_frame_detections
 
                 if track_bbox is not None:
-                    fill_type = self._get_track_fill_type(track, frame_idx)
                     overlap_type = "explicit" if fill_type == "motion" else f"implicit_{fill_type}"
                     motion_bbox_str = (
                         f"motn:{track_bbox[0]:.0f},{track_bbox[1]:.0f},{track_bbox[2]:.0f},{track_bbox[3]:.0f}"
                     )
 
                     overlapping_count = 0
-                    valid_detections = []
+                    valid_detections: list[_Candidate] = []
 
                     if model_detections:
                         for det in model_detections:
@@ -308,11 +284,11 @@ class FullFrameValidator:
 
                             if overlap >= config.spatial_overlap_threshold:
                                 valid_detections.append(
-                                    {
-                                        "detection": det,
-                                        "overlap": overlap,
-                                        "bbox_str": f"bbox:{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}",
-                                    }
+                                    _Candidate(
+                                        detection=det,
+                                        overlap=overlap,
+                                        bbox_str=f"bbox:{det_bbox[0]:.0f},{det_bbox[1]:.0f},{det_bbox[2]:.0f},{det_bbox[3]:.0f}",
+                                    )
                                 )
                                 overlapping_count += 1
                             elif overlap > 0.0:
@@ -327,8 +303,8 @@ class FullFrameValidator:
                             best_score = 0.0
 
                             for valid_det in valid_detections:
-                                det = valid_det["detection"]
-                                overlap = valid_det["overlap"]
+                                det = valid_det.detection
+                                overlap = valid_det.overlap
                                 boosted_conf = min(1.0, det.confidence * consensus_boost)
                                 score = boosted_conf * overlap
 
@@ -337,7 +313,7 @@ class FullFrameValidator:
                                     best_detection = {
                                         "detection": det,
                                         "overlap": overlap,
-                                        "bbox_str": valid_det["bbox_str"],
+                                        "bbox_str": valid_det.bbox_str,
                                         "boosted_conf": boosted_conf,
                                         "score": score,
                                     }
@@ -438,18 +414,87 @@ class FullFrameValidator:
 
         return {"frame_idx": frame_idx, "track_results": track_ensemble_results, "frame_valid": frame_valid}
 
+    def _record_model_contribution(self, model_name: str, detections: list[Detection] | None) -> None:
+        """Fold a batch of detections into this video's per-model contribution stats."""
+        if not detections:
+            return
+        contrib = self._model_contributions[model_name]
+        contrib["total_detections"] += len(detections)
+        contrib["max_confidence"] = max(contrib["max_confidence"], max(det.confidence for det in detections))
+
+    def _detect_on_crop(
+        self,
+        model_name: str,
+        frame,
+        track_bbox: list[float],
+        config,
+        timestamp: float,
+        frame_idx: int,
+    ) -> list[Detection]:
+        """POC crop-based detection: run one model on the padded motion-region crop and map
+        detections back to full-frame pixel coordinates.
+
+        Running on the crop makes a small animal large (higher confidence) and guarantees any
+        detection lies inside the motion region, so it cannot be a no_overlap miss.
+        """
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = track_bbox
+        pad_x = (x2 - x1) * config.crop_detection_padding
+        pad_y = (y2 - y1) * config.crop_detection_padding
+        cx1 = max(0, int(x1 - pad_x))
+        cy1 = max(0, int(y1 - pad_y))
+        cx2 = min(w, int(x2 + pad_x))
+        cy2 = min(h, int(y2 + pad_y))
+        if cx2 <= cx1 or cy2 <= cy1:
+            return []
+
+        crop = frame[cy1:cy2, cx1:cx2]
+        crop_detections = self.ml_ensemble.run_single_model_detection(
+            model_name,
+            crop,
+            config,
+            timestamp_seconds=timestamp,
+            frame_idx=frame_idx,
+            full_frame=crop,
+            accepted_rtdetr_overlap=config.spatial_overlap_threshold,
+        )
+
+        # Map crop-local coordinates back to the full frame by adding the crop origin.
+        mapped = []
+        for det in crop_detections or []:
+            mapped.append(
+                dataclasses.replace(
+                    det,
+                    bbox=BoundingBox(
+                        det.bbox.x1 + cx1,
+                        det.bbox.y1 + cy1,
+                        det.bbox.x2 + cx1,
+                        det.bbox.y2 + cy1,
+                    ),
+                )
+            )
+        return mapped
+
     def _get_track_bbox_for_frame(self, track: ExtendedTrack, frame_idx: int) -> list[float] | None:
-        """Get bbox for specific track at specific frame."""
-        for det in track.bbox_track.detections:
-            if det.frame == frame_idx:
-                return det.bbox
-        return None
+        """Bbox for a track at a frame (O(1), computed on demand).
+
+        Before motion -> backfill position; after motion -> forward-fill position; during
+        motion -> the region's bbox (None for an in-range frame with no motion region).
+        """
+        if frame_idx < track.motion_start_frame:
+            return track.first_known_position
+        if frame_idx > track.motion_end_frame:
+            return track.last_known_position
+        return track.motion_bboxes.get(frame_idx)
 
     def _get_track_fill_type(self, track: ExtendedTrack, frame_idx: int) -> str:
-        """Get fill type for specific track at specific frame."""
-        for det in track.bbox_track.detections:
-            if det.frame == frame_idx:
-                return det.fill_type
+        """Fill type for a track at a frame. Only called when the bbox lookup is non-None,
+        so an in-range frame here is always a motion frame."""
+        if frame_idx < track.motion_start_frame:
+            return "backfill"
+        if frame_idx > track.motion_end_frame:
+            return "forward_fill"
+        return "motion"
         return "unknown"
 
     def _evaluate_tracks(

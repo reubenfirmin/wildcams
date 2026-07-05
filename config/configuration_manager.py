@@ -399,6 +399,20 @@ class ConfigurationManager:
             "confidence clears this. Defaults to --confidence-threshold (prior behavior); lower it "
             "to admit tracks whose confidence is spread across frames (see experiments.md).",
         )
+        parser.add_argument(
+            "--enable-crop-detection",
+            action="store_true",
+            default=False,
+            help="POC: run Step-3 detectors on the padded motion-region crop instead of the full "
+            "frame (larger animals -> higher confidence; detections inherently overlap motion). Default off.",
+        )
+        parser.add_argument(
+            "--crop-detection-padding",
+            type=float,
+            default=0.5,
+            help="Fraction of the motion bbox size to pad the crop on each side when "
+            "--enable-crop-detection is on (default: 0.5).",
+        )
 
     def load_from_cli_args(self, args, include_motion: bool = True) -> None:
         """Load configuration directly from command line arguments."""
@@ -511,6 +525,9 @@ class ConfigurationManager:
                 if args.frame_pass_confidence_threshold is not None
                 else args.confidence_threshold
             ),
+            # Step 3 crop-based detection (POC)
+            enable_crop_detection=args.enable_crop_detection,
+            crop_detection_padding=args.crop_detection_padding,
         )
 
     def get_processing_config(self) -> ProcessingConfig:

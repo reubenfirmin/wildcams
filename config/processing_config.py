@@ -107,3 +107,10 @@ class ProcessingConfig:
     # low-confidence footage. Defaults to confidence_threshold to preserve prior behavior;
     # lower it to admit tracks whose confidence is spread across frames rather than concentrated.
     frame_pass_confidence_threshold: float
+
+    # Step 3 crop-based detection (POC, opt-in; default off preserves full-frame behavior).
+    # When on, detectors run on the padded motion-region crop instead of the full frame, so
+    # small animals are larger (higher confidence) and detections inherently overlap the
+    # motion region (fixes the dominant no_overlap failure mode).
+    enable_crop_detection: bool
+    crop_detection_padding: float

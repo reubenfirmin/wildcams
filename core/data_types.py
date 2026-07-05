@@ -106,33 +106,21 @@ class MotionTrack:
 
 
 @dataclass
-class TrackFrameBBox:
-    """A track's bounding box at one frame of the full-video coverage used in Step 3."""
-
-    frame: int
-    bbox: list[float]  # [x1, y1, x2, y2]; overlap math operates on the raw list
-    timestamp: float
-    motion_detected: bool
-    fill_type: str  # "backfill" | "motion" | "forward_fill"
-
-
-@dataclass
-class BBoxTrack:
-    """Per-frame bbox coverage for a track across the whole video."""
-
-    detections: list[TrackFrameBBox]
-    start_frame: int
-    end_frame: int
-    motion_start_frame: int
-    motion_end_frame: int
-
-
-@dataclass
 class ExtendedTrack:
-    """A motion track extended to full-video bbox coverage for spatial validation."""
+    """A motion track extended with on-demand full-video bbox coverage for Step-3 validation.
+
+    Rather than materializing a bbox for every frame of the video (most never read), the
+    coverage is computed on demand: frames before motion_start use first_known_position
+    (backfill), frames after motion_end use last_known_position (forward-fill), and actual
+    motion frames look up motion_bboxes. See FullFrameValidator._get_track_bbox_for_frame.
+    """
 
     track_id: int
-    bbox_track: BBoxTrack
+    motion_start_frame: int
+    motion_end_frame: int
+    first_known_position: list[float]  # [x1,y1,x2,y2] for backfill frames
+    last_known_position: list[float]  # [x1,y1,x2,y2] for forward-fill frames
+    motion_bboxes: dict[int, list[float]]  # frame_idx -> bbox for actual motion frames
     duration_seconds: float
     motion_frames: int
     original_motion_track: MotionTrack

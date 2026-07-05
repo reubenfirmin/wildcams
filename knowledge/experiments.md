@@ -730,3 +730,53 @@ the pre-refactor tuned baseline:
 - Success set: byte-identical (diff empty).
 - Every validated TRACK ensemble/composite score: byte-identical (diff empty).
 Conclusion: the whole refactor is behavior-neutral end-to-end, not just on unit tests.
+
+## Crop-detection POC: 20/28 -> 28/28 recall: 2026-07-02
+
+Prototyped crop-based Step-3 detection (--enable-crop-detection, default off): run each model on
+the padded motion-region crop instead of the full 4K frame, mapping detections back to full-frame
+coords. Rationale: the dominant Step-3 failure was no_overlap (729 across the 8 misses) plus
+near-zero detector confidence on small animals in 4K frames.
+
+**Result (28 species videos, tuned thresholds):**
+- Recall 20/28 -> **28/28**; all 8 prior failures recovered, zero regressions.
+- Recovered videos now score STRONGLY, not marginally: peak ensemble 5.4-33 vs baseline 0.015-0.731
+  (co3 0.015->5.811, co10 0.031->33.136, pe1 0.129->26.409). Zooming in makes the animal
+  confidently detectable and puts the detection inside the motion region by construction.
+- no_overlap 729 (on 8 failures) -> 289 (whole 28-video run).
+- Faster: co6 1:56 vs ~3.5min full-frame (small crops < 4K inference).
+
+**Important caveats:**
+- PRECISION STILL UNMEASURED. 100% recall on a positives-only set says nothing about false
+  positives; crop detection raises ALL scores, so negatives are required to judge discrimination.
+- The permissive thresholds (frame-pass 0.001, bioclip 0.1, animal-conf 0.1) were lowered to
+  compensate for full-frame's weak 0.02-0.7 signal. Crop now gives 5-33, so those gates are far
+  too loose. The healthy next step is to RAISE thresholds back toward defaults (strong signal no
+  longer needs the loose gates) and re-measure recall+precision with the user's negatives — likely
+  high recall AND restored precision.
+- Default path (crop off) unchanged; POC is flag-gated. All static gates green (mypy/ruff/97 tests).
+
+## Crop-mode algorithmic optimizations: 2026-07-03
+
+Profiled crop mode: cost scaled with track count because _process_frame crop-detects every
+track on every sampled frame (the union across tracks). For ag5 (11 tracks), 91% of per-track
+evaluations were implicit (backfill/forward_fill) — cropping a stale static position on a frame
+the track isn't active in.
+
+Two optimizations (crop path; default full-frame path untouched):
+1. **Skip implicit crop detections** — only crop-detect on a track's own motion frames.
+2. **On-demand extended-track bbox** — replaced per-frame materialization (a TrackFrameBBox for
+   every video frame × track) with O(1) computed lookups; dropped TrackFrameBBox/BBoxTrack types.
+
+**Speedup (crop + strict, 28 videos):** heavy multi-track videos 3-7x faster (ag5 882s->192s,
+puma1 519s->75s, co2 816s->226s, ag2 605s->173s); few-track videos unchanged.
+
+**Behavior:**
+- #2 is behavior-preserving: full-frame co1 byte-identical (1.491/2.155, 1.430/2.061).
+- #1 is behavior-affecting (crop only): recall 21/28 -> 20/28. The lost video (puma2) still passes
+  Step 3 strongly (ensemble 6.458) and reaches Step 4 — it was rejected by the weak CLIP/DeepFaune
+  classifier on a now-different best crop, i.e. a classifier-stage artifact (a SpeciesNet target),
+  not a detection regression.
+
+All static gates green (ruff/mypy/97 tests). #1 could be made flag-optional if max recall is
+preferred over the 3-7x speed on heavy videos.
